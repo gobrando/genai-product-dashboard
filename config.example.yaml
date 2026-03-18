@@ -1,0 +1,172 @@
+# ============================================================================
+# Phoenix PM Dashboard — Configuration
+# ============================================================================
+# Copy this file to config.yaml and customize for your AI product.
+# All sections are optional — the dashboard works with sensible defaults.
+# ============================================================================
+
+product:
+  name: "My AI Product"
+  # Optional: secondary Phoenix source to merge with primary
+  # secondary_source:
+  #   api_url: "https://phoenix-dev.example.com:6006"
+  #   project_id: "UHJvamVjdDox"
+
+# ---------------------------------------------------------------------------
+# Users to exclude from all analytics (internal team, test accounts, etc.)
+# ---------------------------------------------------------------------------
+excluded_users:
+  emails:
+    - "admin@example.com"
+    - "test.user@example.com"
+  # Regex patterns matched against the full email address
+  domain_patterns:
+    - "@internal\\.[a-z0-9.-]+$"
+
+# ---------------------------------------------------------------------------
+# When extracting user emails from traces, prefer these domains
+# (e.g., your organization's domains) over generic ones.
+# ---------------------------------------------------------------------------
+priority_email_domains:
+  - "example.com"
+  - "myorg.org"
+
+# ---------------------------------------------------------------------------
+# Trace type classification
+# Maps regex patterns (matched against root span name) to type labels.
+# The first matching pattern wins. Unmatched traces become "other".
+# ---------------------------------------------------------------------------
+trace_types:
+  - pattern: "referral"
+    type: "search"
+  - pattern: "action.*plan"
+    type: "action_plan"
+  - pattern: "email.*result"
+    type: "email"
+  - pattern: "chat"
+    type: "chat"
+  - pattern: "pipeline\\.run"
+    type: "pipeline"
+
+# ---------------------------------------------------------------------------
+# User cohorts — named groups of users you want to track adoption for.
+# Emails are matched case-insensitively with flexible domain handling.
+# ---------------------------------------------------------------------------
+cohorts:
+  - name: "Pilot Wave 1"
+    color: "#1f77b4"
+    emails:
+      - "user01@example.com"
+      - "user02@example.com"
+
+  - name: "Pilot Wave 2"
+    color: "#2ca02c"
+    emails:
+      - "user03@example.com"
+      - "user04@example.com"
+
+  # - name: "Advisory Board"
+  #   color: "#ff7f0e"
+  #   emails:
+  #     - "advisor1@gmail.com"
+
+# ---------------------------------------------------------------------------
+# Locations — group users by email domain or cohort membership.
+# Used for the "Usage by Location" breakdown in the dashboard.
+# ---------------------------------------------------------------------------
+locations:
+  - name: "Site A"
+    domains:
+      - "@sitea.org"
+    cohorts: ["Pilot Wave 1"]
+
+  - name: "Site B"
+    domains:
+      - "@siteb.org"
+    cohorts: ["Pilot Wave 2"]
+
+# ---------------------------------------------------------------------------
+# Meeting windows — scheduled sessions to exclude from "organic" usage.
+# Traces during these windows are tagged as "planned" rather than organic.
+# ---------------------------------------------------------------------------
+meeting_windows:
+  timezone: "America/New_York"
+  duration_minutes: 60
+  # Emails that should ALWAYS count as organic even during meeting windows
+  # (e.g., a shared intake account that receives real user traffic)
+  always_organic_emails: []
+
+  sessions:
+    - name: "Training Session 1"
+      starts:
+        - "2025-11-04 14:00"
+        - "2025-11-05 14:00"
+
+    - name: "Advisory Board Meeting 1"
+      starts:
+        - "2025-12-01 13:00"
+        - "2025-12-02 14:00"
+
+# ---------------------------------------------------------------------------
+# Geographic analysis — define your service area zip codes and city mappings.
+# Used for geographic coverage reports and service gap analysis.
+# ---------------------------------------------------------------------------
+geographic:
+  regions:
+    - name: "Primary Service Area"
+      zip_codes:
+        - "10001"
+        - "10002"
+        - "10003"
+
+  # Optional: map zip codes to friendly city/neighborhood names
+  zip_to_city:
+    "10001": "New York (Midtown)"
+    "10002": "New York (Lower East Side)"
+    "10003": "New York (East Village)"
+
+# ---------------------------------------------------------------------------
+# Query categories — keyword-based classification of user queries.
+# If empty, the dashboard will show raw query data without categorization.
+# Keywords are matched case-insensitively. Longer keywords score higher.
+# ---------------------------------------------------------------------------
+categories:
+  - name: "Technical Support"
+    keywords:
+      - "error"
+      - "bug"
+      - "broken"
+      - "not working"
+      - "crash"
+
+  - name: "How-To Questions"
+    keywords:
+      - "how to"
+      - "how do I"
+      - "tutorial"
+      - "guide"
+      - "help me"
+
+  - name: "Feature Requests"
+    keywords:
+      - "can you add"
+      - "feature request"
+      - "would be nice"
+      - "suggestion"
+
+  # Example for a social services product:
+  # - name: "Employment & Job Training"
+  #   keywords:
+  #     - "job"
+  #     - "employment"
+  #     - "career"
+  #     - "job training"
+  #     - "workforce"
+  #
+  # - name: "Housing & Homeless Support"
+  #   keywords:
+  #     - "housing"
+  #     - "shelter"
+  #     - "rent"
+  #     - "homeless"
+  #     - "eviction"
