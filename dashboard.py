@@ -744,6 +744,17 @@ def main():
                     fig = px.pie(model_df, values="Requests", names="Model", title="Requests by Model")
                     st.plotly_chart(fig, use_container_width=True)
 
+                    # Show raw model names for debugging
+                    raw_models = stats.get("models_used_raw", stats.get("models_used", {}))
+                    if raw_models:
+                        with st.expander("Raw model names from traces", expanded=False):
+                            raw_df = pd.DataFrame(
+                                list(raw_models.items()),
+                                columns=["Raw Model Name", "Span Count"],
+                            ).sort_values("Span Count", ascending=False)
+                            st.dataframe(raw_df, use_container_width=True, hide_index=True)
+                            st.caption("These are the exact model names stored in Phoenix LLM span attributes.")
+
     # ==================================================================
     # TAB 2: Usage Analytics (Trace-based)
     # ==================================================================

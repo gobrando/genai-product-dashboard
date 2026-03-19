@@ -261,11 +261,20 @@ class TraceAnalyzer:
             'user_facing_traces': len(user_facing)
         }
 
-        # Model usage
+        # Model usage — prefer LLM spans only for accurate model attribution
         if 'model' in self.df.columns:
-            model_series = self.df['model'].replace('', pd.NA).dropna()
+            # Try LLM spans first (these are the actual model calls)
+            if 'span_kind' in self.df.columns:
+                llm_df = self.df[self.df['span_kind'].astype(str).str.upper() == 'LLM']
+                model_series = llm_df['model'].replace('', pd.NA).dropna() if not llm_df.empty else pd.Series(dtype=str)
+            else:
+                model_series = pd.Series(dtype=str)
+            # Fall back to all spans if no LLM spans have model info
+            if model_series.empty:
+                model_series = self.df['model'].replace('', pd.NA).dropna()
             if not model_series.empty:
                 stats['models_used'] = model_series.value_counts().to_dict()
+                stats['models_used_raw'] = model_series.value_counts().to_dict()  # pre-cleanup
 
         return stats
 
