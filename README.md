@@ -4,17 +4,6 @@
 
 Connect to any [Phoenix Arize](https://phoenix.arize.com/) instance, paste the URL, and get instant visibility into adoption, usage patterns, performance, and quality — no coding or configuration required.
 
-<!-- Screenshots — replace these placeholders with actual captures -->
-| Executive Summary | Usage Analytics |
-|:-:|:-:|
-| ![Executive Summary](docs/screenshots/executive-summary.png) | ![Usage Analytics](docs/screenshots/usage-analytics.png) |
-
-| Performance Metrics | Log Explorer |
-|:-:|:-:|
-| ![Performance Metrics](docs/screenshots/performance-metrics.png) | ![Log Explorer](docs/screenshots/log-explorer.png) |
-
-> **Note:** Screenshot placeholders above. Add actual PNGs to `docs/screenshots/` to complete.
-
 ---
 
 ## Quick Start
