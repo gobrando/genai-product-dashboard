@@ -1,6 +1,7 @@
 """
-Phoenix PM Dashboard — Generalized Streamlit Dashboard
-Config-driven analytics for any GenAI product traced with Phoenix Arize.
+Phoenix PM Dashboard — Streamlit Dashboard
+Zero-config analytics for any GenAI product traced with Phoenix Arize.
+Just paste your Phoenix URL and go.
 """
 import streamlit as st
 import plotly.express as px
@@ -23,17 +24,21 @@ from config import (
     get_location_for_email,
     get_all_cohort_emails,
     DashboardConfig,
+    CohortConfig,
+    LocationConfig,
 )
 
 # Load environment variables
 load_dotenv()
 
-# Load product configuration
+# Load product configuration (gracefully returns defaults when config.yaml absent)
 CONFIG = load_config()
 
-# Page configuration
+# Page configuration — use session-state product name when available
+_initial_product_name = CONFIG.product_name or "My AI Product"
+
 st.set_page_config(
-    page_title=f"{CONFIG.product_name} — Phoenix Dashboard",
+    page_title=f"{_initial_product_name} — Phoenix Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -63,10 +68,28 @@ DEFAULT_COLORS = [
     "#d62728", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22",
 ]
 
+# Common timezones for the meeting-window picker
+_COMMON_TIMEZONES = [
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Anchorage",
+    "Pacific/Honolulu",
+    "UTC",
+    "Europe/London",
+    "Europe/Berlin",
+    "Europe/Paris",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+]
+
 
 def _cohort_color(idx: int, cohort) -> str:
     """Return the configured color for a cohort, falling back to a palette."""
-    if cohort.color:
+    if hasattr(cohort, "color") and cohort.color:
         return cohort.color
     return DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]
 
@@ -110,12 +133,98 @@ def _detect_trace_types(df: pd.DataFrame) -> list:
     )
 
 
+def _build_cohort_email_sets_from_session() -> dict:
+    """Return {cohort_name: set_of_emails} built from session-state UI inputs."""
+    raw = st.session_state.get("_cohort_definitions", "")
+    cohorts = _parse_cohort_definitions(raw)
+    return {name: emails for name, emails in cohorts.items()}
+
+
 def _build_cohort_email_sets(config: DashboardConfig) -> dict:
     """Return {cohort_name: set_of_emails} for all configured cohorts."""
     return {
         cohort.name: {e.lower().strip() for e in cohort.emails}
         for cohort in config.cohorts
     }
+
+
+def _parse_cohort_definitions(text: str) -> dict:
+    """Parse a cohort definition block into {name: set_of_emails}.
+
+    Expected format (one or more sections):
+        Cohort Name
+        email1@example.com
+        email2@example.com
+
+        Another Cohort
+        email3@example.com
+    """
+    cohorts: dict = {}
+    current_name = None
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            current_name = None
+            continue
+        if "@" in stripped:
+            if current_name is None:
+                # Treat lines before any header as unnamed — skip
+                continue
+            cohorts.setdefault(current_name, set()).add(stripped.lower())
+        else:
+            # It is a cohort name header
+            current_name = stripped
+            cohorts.setdefault(current_name, set())
+    return cohorts
+
+
+def _get_product_name() -> str:
+    """Return the product name from session state, falling back to CONFIG."""
+    return st.session_state.get("_product_name", CONFIG.product_name or "My AI Product")
+
+
+def _domain_from_email(email: str) -> str:
+    """Extract domain from an email address."""
+    email = str(email).strip().lower()
+    if "@" in email:
+        return email.split("@", 1)[1]
+    return "unknown"
+
+
+def _build_location_mapping_from_session() -> dict:
+    """Return {domain: friendly_name} from the session-state location text."""
+    raw = st.session_state.get("_location_domain_map", "")
+    mapping: dict = {}
+    for line in (raw or "").splitlines():
+        stripped = line.strip()
+        if not stripped or "=" not in stripped:
+            continue
+        parts = stripped.split("=", 1)
+        domain = parts[0].strip().lower()
+        name = parts[1].strip()
+        if domain and name:
+            mapping[domain] = name
+    return mapping
+
+
+def _get_location_for_email_dynamic(
+    email: str,
+    config: DashboardConfig,
+    cohort_email_sets: dict,
+    domain_map: dict,
+) -> str:
+    """Determine location, preferring session-state domain mapping, then config."""
+    email_lower = email.lower().strip() if email else ""
+    if not email_lower or "unknown" in email_lower or "@" not in email_lower:
+        return "Unknown"
+
+    # 1. Check session-state domain map
+    domain = _domain_from_email(email_lower)
+    if domain in domain_map:
+        return domain_map[domain]
+
+    # 2. Fall through to config-based location
+    return get_location_for_email(config, email_lower, cohort_email_sets)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +307,8 @@ def load_data(
 # ---------------------------------------------------------------------------
 
 def main():
-    st.title(f"📊 {CONFIG.product_name} — Phoenix Analytics Dashboard")
+    product_name = _get_product_name()
+    st.title(f"📊 {product_name} — Phoenix Analytics Dashboard")
     st.markdown("*Analyze your GenAI product usage and quality metrics*")
 
     # ------------------------------------------------------------------
@@ -208,29 +318,16 @@ def main():
         st.header("⚙️ Configuration")
 
         # API Configuration
-        api_url = st.text_input(
-            "Phoenix API URL",
-            value=os.getenv("PHOENIX_API_URL", "https://your-phoenix-instance.arize.com"),
-            help="Your Phoenix instance URL",
+        raw_url = st.text_input(
+            "Phoenix URL",
+            value=os.getenv("PHOENIX_API_URL", ""),
+            placeholder="https://phoenix.example.com:6006 or full spans URL",
+            help="Paste your Phoenix instance URL or a full spans URL (e.g. .../projects/ABC/spans).",
         )
 
-        # Secondary source (config-driven)
-        has_secondary = bool(CONFIG.secondary_phoenix_url)
-        secondary_url_default = os.getenv(
-            "PHOENIX_DEV_SPANS_URL",
-            CONFIG.secondary_phoenix_url,
-        )
-        include_secondary_source = st.checkbox(
-            "Include secondary source traces",
-            value=has_secondary,
-            help="If enabled, dashboard also loads spans from a secondary Phoenix project and merges with primary data.",
-        )
-        secondary_url = st.text_input(
-            "Secondary Phoenix URL",
-            value=secondary_url_default,
-            help="Can be full spans URL (recommended) or base API URL.",
-            disabled=not include_secondary_source,
-        )
+        # Auto-extract project ID from pasted URL
+        auto_project_id = _extract_project_id_from_url(raw_url)
+        api_url = _normalize_api_base_url(raw_url)
 
         api_key = st.text_input(
             "API Key (optional)",
@@ -276,21 +373,47 @@ def main():
         )
 
         project_id = st.text_input(
-            "Project ID (optional)",
-            value=os.getenv("PHOENIX_PROJECT_ID", ""),
-            help="Filter by specific project",
+            "Project ID",
+            value=os.getenv("PHOENIX_PROJECT_ID", "") or auto_project_id,
+            help="Auto-filled when you paste a full spans URL. You can also set it manually.",
         )
 
-        secondary_project_default = os.getenv(
-            "PHOENIX_PROJECT_ID_DEV",
-            _extract_project_id_from_url(secondary_url_default) or CONFIG.secondary_project_id,
+        # Product name
+        st.text_input(
+            "Product Name",
+            value=CONFIG.product_name or "My AI Product",
+            key="_product_name",
+            help="Displayed in charts and headers.",
         )
-        secondary_project_id = st.text_input(
-            "Secondary Project ID",
-            value=secondary_project_default,
-            help="Project ID for the secondary Phoenix source.",
-            disabled=not include_secondary_source,
-        )
+
+        # Secondary source — collapsed by default
+        with st.expander("🔗 Secondary Source (optional)", expanded=False):
+            has_secondary = bool(CONFIG.secondary_phoenix_url)
+            secondary_url_default = os.getenv(
+                "PHOENIX_DEV_SPANS_URL",
+                CONFIG.secondary_phoenix_url,
+            )
+            include_secondary_source = st.checkbox(
+                "Include secondary source traces",
+                value=has_secondary,
+                help="If enabled, dashboard also loads spans from a secondary Phoenix project and merges with primary data.",
+            )
+            secondary_url = st.text_input(
+                "Secondary Phoenix URL",
+                value=secondary_url_default,
+                help="Can be full spans URL (recommended) or base API URL.",
+                disabled=not include_secondary_source,
+            )
+            secondary_project_default = os.getenv(
+                "PHOENIX_PROJECT_ID_DEV",
+                _extract_project_id_from_url(secondary_url_default) or CONFIG.secondary_project_id,
+            )
+            secondary_project_id = st.text_input(
+                "Secondary Project ID",
+                value=secondary_project_default,
+                help="Project ID for the secondary Phoenix source.",
+                disabled=not include_secondary_source,
+            )
 
         st.divider()
 
@@ -322,6 +445,19 @@ def main():
     # Load data
     # ------------------------------------------------------------------
     if load_button or st.session_state.data_loaded:
+        # Guard: empty URL
+        if not api_url or not api_url.startswith("http"):
+            if load_button:
+                st.warning(
+                    "Please paste a valid Phoenix URL in the sidebar to get started. "
+                    "It should look like `https://phoenix.example.com:6006` or a full "
+                    "spans URL such as `https://phoenix.example.com:6006/projects/ABC/spans`."
+                )
+            if not st.session_state.data_loaded:
+                # Show landing page
+                _show_landing_page()
+                return
+
         try:
             with st.spinner("Connecting to Phoenix API..."):
                 primary_base_url = _normalize_api_base_url(api_url)
@@ -376,7 +512,7 @@ def main():
             return
 
     if not st.session_state.data_loaded:
-        st.info("Configure your settings in the sidebar and click 'Load Data' to begin")
+        _show_landing_page()
         return
 
     analyzer = st.session_state.analyzer
@@ -393,8 +529,17 @@ def main():
     # Detect trace types dynamically from data
     detected_trace_types = _detect_trace_types(analyzer.traces_df)
 
-    # Build cohort email sets from config
+    # Build cohort email sets — merge config + session-state UI
     cohort_email_sets = _build_cohort_email_sets(CONFIG)
+    ui_cohort_sets = _build_cohort_email_sets_from_session()
+    for name, emails in ui_cohort_sets.items():
+        if name in cohort_email_sets:
+            cohort_email_sets[name] = cohort_email_sets[name] | emails
+        else:
+            cohort_email_sets[name] = emails
+
+    # Build location domain mapping from session state
+    domain_map = _build_location_mapping_from_session()
 
     # ------------------------------------------------------------------
     # Main dashboard tabs
@@ -642,17 +787,23 @@ def main():
 
         # ----- Organic usage -----
         st.divider()
-        st.subheader("🌿 Organic Usage (excluding meeting windows)")
+        st.subheader("🌿 Organic Usage — Optional: Filter Out Planned Sessions")
         st.caption(
-            "Filters out traces that occurred during scheduled meeting sessions, "
-            "so you can see organic (non-planned) usage trends."
+            "If you run demos or scheduled meetings where users try the tool, "
+            "you can enter those meeting times below to separate organic from planned usage. "
+            "If you leave meeting times blank, all traces are shown as organic."
         )
 
-        exclude_meetings = st.checkbox(
-            "Exclude meeting windows",
-            value=True,
-            help="If enabled, traces during the listed meeting windows will be counted as 'planned' and removed from 'organic' usage.",
+        # Meeting windows UI — visible, not hidden in expander
+        meeting_tz_name = st.selectbox(
+            "Meeting timezone",
+            options=_COMMON_TIMEZONES,
+            index=_COMMON_TIMEZONES.index(CONFIG.meeting_windows.timezone)
+            if CONFIG.meeting_windows.timezone in _COMMON_TIMEZONES
+            else 0,
+            key="organic_tz",
         )
+
         meeting_duration_min = st.slider(
             "Assumed meeting session length (minutes)",
             min_value=15,
@@ -664,30 +815,32 @@ def main():
 
         # Load meeting starts from config
         default_meeting_starts = get_all_meeting_starts(CONFIG)
+        default_starts_text = "\n".join(default_meeting_starts) if default_meeting_starts else ""
 
-        with st.expander("📅 Meeting window schedule (editable)", expanded=False):
-            st.markdown(
-                f"Paste additional meeting start times below "
-                f"({CONFIG.meeting_windows.timezone}), one per line as `YYYY-MM-DD HH:MM`."
-            )
-            additional_starts_text = st.text_area(
-                f"Additional meeting starts ({CONFIG.meeting_windows.timezone})",
-                value="",
-                height=120,
-                key="additional_meeting_starts",
-            )
-            show_default = st.checkbox("Show configured meeting starts", value=False)
-            if show_default:
-                if default_meeting_starts:
-                    st.code("\n".join(default_meeting_starts))
-                else:
-                    st.info("No meeting starts configured in config.yaml.")
+        meeting_starts_text = st.text_area(
+            f"Meeting start times ({meeting_tz_name}) — one per line as YYYY-MM-DD HH:MM",
+            value=default_starts_text,
+            height=120,
+            key="meeting_starts_text",
+            placeholder="2026-03-10 09:00\n2026-03-12 14:00",
+        )
+
+        always_organic_default = "\n".join(CONFIG.meeting_windows.always_organic_emails) if CONFIG.meeting_windows.always_organic_emails else ""
+        always_organic_text = st.text_area(
+            "Always count as organic (emails, one per line)",
+            value=always_organic_default,
+            height=80,
+            key="always_organic_emails",
+            placeholder="boss@company.com",
+        )
+
+        exclude_meetings = bool(meeting_starts_text.strip())
 
         # Build meeting windows in UTC
-        meeting_tz = ZoneInfo(CONFIG.meeting_windows.timezone)
-        meeting_starts_all = list(default_meeting_starts)
-        if additional_starts_text.strip():
-            for line in additional_starts_text.splitlines():
+        meeting_tz = ZoneInfo(meeting_tz_name)
+        meeting_starts_all = []
+        if meeting_starts_text.strip():
+            for line in meeting_starts_text.splitlines():
                 s = line.strip()
                 if s:
                     meeting_starts_all.append(s)
@@ -718,9 +871,10 @@ def main():
                     )
 
                 # Always count configured always-organic emails as organic
-                always_organic = {
-                    e.lower().strip() for e in CONFIG.meeting_windows.always_organic_emails
-                }
+                always_organic = _parse_emails(always_organic_text)
+                always_organic.update(
+                    {e.lower().strip() for e in CONFIG.meeting_windows.always_organic_emails}
+                )
                 if always_organic and "user_email" in traces_for_org.columns:
                     organic_override_mask = (
                         traces_for_org["user_email"]
@@ -1056,19 +1210,47 @@ def main():
             )
             st.plotly_chart(fig_org, use_container_width=True)
 
-            # ----- Usage by Location (config-driven) -----
+            # ----- Usage by Location -----
             st.subheader("🏢 Usage by Location")
             st.caption(
-                "Total organic usage grouped by location (domain-based, plus known cohort emails)."
+                "Total organic usage grouped by location. Without config, users are grouped by email domain. "
+                "Use the expander below to map domains to friendly names."
             )
+
+            with st.expander("Configure location domain mapping", expanded=False):
+                st.markdown(
+                    "Map email domains to friendly location names (one per line, format: `domain = Name`). "
+                    "Example:\n```\nexample.com = HQ Office\npartner.org = Partner Site\n```"
+                )
+                # Pre-populate from config locations
+                config_loc_lines = []
+                for loc in CONFIG.locations:
+                    for d in loc.domains:
+                        config_loc_lines.append(f"{d} = {loc.name}")
+                st.text_area(
+                    "Domain mapping",
+                    value="\n".join(config_loc_lines),
+                    height=120,
+                    key="_location_domain_map",
+                    placeholder="example.com = New York Office\npartner.org = Partner",
+                )
+
+            # Rebuild domain_map after the text_area is rendered
+            domain_map = _build_location_mapping_from_session()
 
             if "user_email" not in organic_df.columns:
                 st.info("No user email field available to compute location-based usage.")
             else:
                 organic_df_loc = organic_df.copy()
-                organic_df_loc["pilot_location"] = organic_df_loc["user_email"].apply(
-                    lambda email: get_location_for_email(CONFIG, email, cohort_email_sets)
-                )
+
+                if domain_map or CONFIG.locations:
+                    # Use configured + session-state mapping
+                    organic_df_loc["pilot_location"] = organic_df_loc["user_email"].apply(
+                        lambda email: _get_location_for_email_dynamic(email, CONFIG, cohort_email_sets, domain_map)
+                    )
+                else:
+                    # No config at all — auto-group by email domain
+                    organic_df_loc["pilot_location"] = organic_df_loc["user_email"].apply(_domain_from_email)
 
                 location_names = sorted(organic_df_loc["pilot_location"].unique().tolist())
 
@@ -1106,7 +1288,7 @@ def main():
 
                     fig_loc = go.Figure()
                     for i, loc_name in enumerate(location_names):
-                        if loc_name in ("Other", "Unknown"):
+                        if loc_name in ("Other", "Unknown", "unknown"):
                             fig_loc.add_trace(go.Scatter(
                                 x=location_ts["timestamp"],
                                 y=location_ts[loc_name],
@@ -1136,7 +1318,7 @@ def main():
 
                 # Show Other / Unknown details
                 other_unknown_count = len(
-                    organic_df_loc[organic_df_loc["pilot_location"].isin(["Other", "Unknown"])]
+                    organic_df_loc[organic_df_loc["pilot_location"].isin(["Other", "Unknown", "unknown"])]
                 )
                 if other_unknown_count > 0:
                     with st.expander(
@@ -1145,7 +1327,7 @@ def main():
                     ):
                         other_emails = (
                             organic_df_loc[
-                                organic_df_loc["pilot_location"].isin(["Other", "Unknown"])
+                                organic_df_loc["pilot_location"].isin(["Other", "Unknown", "unknown"])
                             ]["user_email"]
                             .value_counts()
                             .reset_index()
@@ -1165,105 +1347,142 @@ def main():
 
             st.divider()
 
-            # ----- Organic usage by cohort (config-driven) -----
-            if CONFIG.cohorts:
-                cohort_names = [c.name for c in CONFIG.cohorts]
-                st.subheader(f"🌿 Organic Usage by Cohort ({', '.join(cohort_names)})")
-                st.caption("Tracks organic usage for configured cohorts (after excluding meeting windows).")
+            # ----- Organic usage by cohort (always shown) -----
+            st.subheader("🌿 Organic Usage by Cohort")
+            st.caption(
+                "Define user cohorts to track adoption over time. "
+                "Enter cohort names and emails below, or pre-populate them via config.yaml."
+            )
 
-                if "user_email" not in organic_df.columns:
-                    st.info("No user email field available to compute cohort organic usage.")
+            # Build default text from config cohorts
+            config_cohort_lines = []
+            for cohort in CONFIG.cohorts:
+                config_cohort_lines.append(cohort.name)
+                for e in cohort.emails:
+                    config_cohort_lines.append(e)
+                config_cohort_lines.append("")  # blank line separator
+
+            cohort_instructions = (
+                "Enter cohorts in this format — cohort name on its own line, "
+                "then emails below it, separated by a blank line between cohorts:\n\n"
+                "```\nTeam Alpha\nalice@co.com\nbob@co.com\n\nTeam Beta\ncharlie@co.com\n```"
+            )
+            st.markdown(cohort_instructions)
+
+            cohort_def_text = st.text_area(
+                "Cohort definitions",
+                value="\n".join(config_cohort_lines).strip(),
+                height=200,
+                key="_cohort_definitions",
+                placeholder="Team Alpha\nalice@company.com\nbob@company.com\n\nTeam Beta\ncharlie@company.com",
+            )
+
+            # Rebuild cohort sets after the text_area is rendered
+            ui_cohort_sets = _parse_cohort_definitions(cohort_def_text)
+
+            # Merge with config cohorts
+            merged_cohort_sets: dict = {}
+            for cohort in CONFIG.cohorts:
+                merged_cohort_sets[cohort.name] = {e.lower().strip() for e in cohort.emails}
+            for name, emails in ui_cohort_sets.items():
+                if name in merged_cohort_sets:
+                    merged_cohort_sets[name] = merged_cohort_sets[name] | emails
                 else:
-                    with st.expander("🎯 Cohort emails (editable)", expanded=False):
-                        for cohort in CONFIG.cohorts:
-                            default_text = "\n".join(cohort.emails)
-                            st.text_area(
-                                f"{cohort.name} emails (one per line)",
-                                value=default_text,
-                                height=140,
-                                key=f"cohort_emails_{cohort.name}",
-                            )
+                    merged_cohort_sets[name] = emails
 
-                    org_emails = organic_df["user_email"].astype(str).str.lower().str.strip()
+            # Update the shared cohort_email_sets for downstream
+            cohort_email_sets.update(merged_cohort_sets)
 
-                    # Build cohort series dynamically
-                    cohort_series_list = []
-                    for cohort in CONFIG.cohorts:
-                        cohort_text = st.session_state.get(
-                            f"cohort_emails_{cohort.name}",
-                            "\n".join(cohort.emails),
-                        )
-                        cohort_set = _parse_emails(cohort_text)
-                        # Also match by configured location domains
-                        domain_mask = pd.Series(False, index=organic_df.index)
-                        for loc in CONFIG.locations:
-                            if cohort.name in loc.cohort_names:
-                                for domain in loc.domains:
-                                    domain_mask = domain_mask | org_emails.str.contains(domain, na=False)
-                        match_mask = org_emails.isin(cohort_set) | domain_mask
+            if not merged_cohort_sets:
+                st.info(
+                    "No cohorts defined yet. Enter cohort names and emails above "
+                    "to see adoption tracking charts."
+                )
+            elif "user_email" not in organic_df.columns:
+                st.info("No user email field available to compute cohort organic usage.")
+            else:
+                cohort_names = list(merged_cohort_sets.keys())
+                st.markdown(f"**Tracking cohorts:** {', '.join(cohort_names)}")
 
-                        s = (
-                            organic_df.loc[match_mask]
-                            .set_index("_trace_start_utc")
-                            .resample(ts_freq)
-                            .size()
-                            .rename(cohort.name)
-                        )
-                        cohort_series_list.append(s)
+                org_emails = organic_df["user_email"].astype(str).str.lower().str.strip()
 
-                    if cohort_series_list:
-                        cohort_ts = (
-                            pd.concat(cohort_series_list, axis=1)
-                            .fillna(0)
-                            .astype(int)
-                            .reset_index()
-                            .rename(columns={"_trace_start_utc": "timestamp"})
-                        )
-
-                        fig_coh = go.Figure()
-                        for i, cohort in enumerate(CONFIG.cohorts):
-                            color = _cohort_color(i, cohort)
-                            fig_coh.add_trace(go.Scatter(
-                                x=cohort_ts["timestamp"],
-                                y=cohort_ts[cohort.name],
-                                name=f"{cohort.name} Organic",
-                                line=dict(color=color),
-                            ))
-                        fig_coh.update_layout(
-                            title=f"Organic Usage Over Time — Cohorts ({', '.join(cohort_names)})",
-                            height=420,
-                            xaxis_title="Time",
-                            yaxis_title="Trace Count",
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        )
-                        st.plotly_chart(fig_coh, use_container_width=True)
-
-                    # Show unmatched organic traces
-                    all_cohort_emails = get_all_cohort_emails(CONFIG)
-                    # Also include domain-based matching
-                    all_domain_mask = pd.Series(False, index=organic_df.index)
+                # Build cohort series dynamically
+                cohort_series_list = []
+                for cohort_name, cohort_set in merged_cohort_sets.items():
+                    # Also match by configured location domains
+                    domain_mask = pd.Series(False, index=organic_df.index)
                     for loc in CONFIG.locations:
-                        for domain in loc.domains:
-                            all_domain_mask = all_domain_mask | org_emails.str.contains(domain, na=False)
-                    unmatched_mask = ~(org_emails.isin(all_cohort_emails) | all_domain_mask)
-                    unmatched_organic = organic_df[unmatched_mask].copy()
+                        if cohort_name in loc.cohort_names:
+                            for loc_domain in loc.domains:
+                                domain_mask = domain_mask | org_emails.str.contains(loc_domain, na=False)
+                    match_mask = org_emails.isin(cohort_set) | domain_mask
 
-                    if not unmatched_organic.empty:
-                        with st.expander(
-                            f"{len(unmatched_organic)} organic traces NOT in any cohort (click to investigate)",
-                            expanded=False,
-                        ):
-                            st.markdown("These organic traces have user emails that don't match any cohort or location domain:")
-                            unmatched_emails = unmatched_organic["user_email"].value_counts().reset_index()
-                            unmatched_emails.columns = ["Email", "Trace Count"]
-                            st.dataframe(unmatched_emails.head(20), use_container_width=True, hide_index=True)
+                    s = (
+                        organic_df.loc[match_mask]
+                        .set_index("_trace_start_utc")
+                        .resample(ts_freq)
+                        .size()
+                        .rename(cohort_name)
+                    )
+                    cohort_series_list.append(s)
 
-                            st.markdown("**Possible causes:**")
-                            st.markdown(
-                                "- Email extracted in different format than cohort list\n"
-                                "- User not added to any cohort list yet\n"
-                                "- Email showing as 'unknown_xxx' (extraction failed)"
-                            )
+                if cohort_series_list:
+                    cohort_ts = (
+                        pd.concat(cohort_series_list, axis=1)
+                        .fillna(0)
+                        .astype(int)
+                        .reset_index()
+                        .rename(columns={"_trace_start_utc": "timestamp"})
+                    )
+
+                    fig_coh = go.Figure()
+                    for i, cohort_name in enumerate(cohort_names):
+                        # Try to get color from config cohort
+                        config_cohort = next((c for c in CONFIG.cohorts if c.name == cohort_name), None)
+                        color = _cohort_color(i, config_cohort) if config_cohort else DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
+                        fig_coh.add_trace(go.Scatter(
+                            x=cohort_ts["timestamp"],
+                            y=cohort_ts[cohort_name],
+                            name=f"{cohort_name} Organic",
+                            line=dict(color=color),
+                        ))
+                    fig_coh.update_layout(
+                        title=f"Organic Usage Over Time — Cohorts ({', '.join(cohort_names)})",
+                        height=420,
+                        xaxis_title="Time",
+                        yaxis_title="Trace Count",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    )
+                    st.plotly_chart(fig_coh, use_container_width=True)
+
+                # Show unmatched organic traces
+                all_cohort_email_set = set()
+                for s in merged_cohort_sets.values():
+                    all_cohort_email_set.update(s)
+                # Also include domain-based matching
+                all_domain_mask = pd.Series(False, index=organic_df.index)
+                for loc in CONFIG.locations:
+                    for loc_domain in loc.domains:
+                        all_domain_mask = all_domain_mask | org_emails.str.contains(loc_domain, na=False)
+                unmatched_mask = ~(org_emails.isin(all_cohort_email_set) | all_domain_mask)
+                unmatched_organic = organic_df[unmatched_mask].copy()
+
+                if not unmatched_organic.empty:
+                    with st.expander(
+                        f"{len(unmatched_organic)} organic traces NOT in any cohort (click to investigate)",
+                        expanded=False,
+                    ):
+                        st.markdown("These organic traces have user emails that don't match any cohort or location domain:")
+                        unmatched_emails = unmatched_organic["user_email"].value_counts().reset_index()
+                        unmatched_emails.columns = ["Email", "Trace Count"]
+                        st.dataframe(unmatched_emails.head(20), use_container_width=True, hide_index=True)
+
+                        st.markdown("**Possible causes:**")
+                        st.markdown(
+                            "- Email extracted in different format than cohort list\n"
+                            "- User not added to any cohort list yet\n"
+                            "- Email showing as 'unknown_xxx' (extraction failed)"
+                        )
 
     # ==================================================================
     # TAB 3: Usage Report
@@ -1272,40 +1491,59 @@ def main():
         st.header("📋 Comprehensive Usage Report")
         st.markdown("*Detailed breakdown by user level, resource type, and geography*")
 
-        # ----- Cohort configuration (config-driven) -----
-        cohort_email_lists = {}
-        if CONFIG.cohorts:
-            with st.expander("⚙️ Cohort Configuration", expanded=False):
-                cohort_config_tabs = st.tabs([c.name for c in CONFIG.cohorts])
-                for i, cohort in enumerate(CONFIG.cohorts):
-                    with cohort_config_tabs[i]:
-                        default_text = "\n".join(cohort.emails)
-                        text = st.text_area(
-                            f"{cohort.name} User Emails (one per line)",
-                            value=default_text,
-                            height=200,
-                            key=f"report_cohort_{cohort.name}",
-                        )
-                        cohort_email_lists[cohort.name] = [
-                            e.strip().lower() for e in text.split("\n") if e.strip()
-                        ]
+        # ----- Cohort configuration (inline UI) -----
+        st.subheader("👥 Cohort Configuration")
+        st.caption(
+            "Define cohorts here (or reuse those from the Usage Analytics tab). "
+            "Format: cohort name on its own line, emails below, blank line between cohorts."
+        )
 
-            # Auto-discover users by location domain
-            if not analyzer.traces_df.empty and "user_email" in analyzer.traces_df.columns:
-                active_emails_lower = (
-                    analyzer.traces_df["user_email"].astype(str).str.lower().str.strip()
-                )
-                for loc in CONFIG.locations:
-                    for cohort_name in loc.cohort_names:
-                        if cohort_name in cohort_email_lists:
-                            for domain in loc.domains:
-                                auto_emails = sorted({
-                                    e for e in active_emails_lower.unique().tolist()
-                                    if domain in e and e and e != "unknown" and not e.startswith("unknown_")
-                                })
-                                cohort_email_lists[cohort_name] = sorted(
-                                    set(cohort_email_lists[cohort_name]) | set(auto_emails)
-                                )
+        # Pre-populate from session state (shared with tab 2) or config
+        report_cohort_default = st.session_state.get("_cohort_definitions", "")
+        if not report_cohort_default:
+            lines = []
+            for cohort in CONFIG.cohorts:
+                lines.append(cohort.name)
+                for e in cohort.emails:
+                    lines.append(e)
+                lines.append("")
+            report_cohort_default = "\n".join(lines).strip()
+
+        report_cohort_text = st.text_area(
+            "Cohort definitions (for this report)",
+            value=report_cohort_default,
+            height=180,
+            key="report_cohort_defs",
+            placeholder="Team Alpha\nalice@company.com\nbob@company.com\n\nTeam Beta\ncharlie@company.com",
+        )
+
+        report_cohort_sets = _parse_cohort_definitions(report_cohort_text)
+        # Merge with config cohorts
+        for cohort in CONFIG.cohorts:
+            cname = cohort.name
+            if cname in report_cohort_sets:
+                report_cohort_sets[cname] = report_cohort_sets[cname] | {e.lower().strip() for e in cohort.emails}
+            else:
+                report_cohort_sets[cname] = {e.lower().strip() for e in cohort.emails}
+
+        cohort_email_lists = {name: sorted(emails) for name, emails in report_cohort_sets.items()}
+
+        # Auto-discover users by location domain
+        if cohort_email_lists and not analyzer.traces_df.empty and "user_email" in analyzer.traces_df.columns:
+            active_emails_lower = (
+                analyzer.traces_df["user_email"].astype(str).str.lower().str.strip()
+            )
+            for loc in CONFIG.locations:
+                for cohort_name in loc.cohort_names:
+                    if cohort_name in cohort_email_lists:
+                        for loc_domain in loc.domains:
+                            auto_emails = sorted({
+                                e for e in active_emails_lower.unique().tolist()
+                                if loc_domain in e and e and e != "unknown" and not e.startswith("unknown_")
+                            })
+                            cohort_email_lists[cohort_name] = sorted(
+                                set(cohort_email_lists[cohort_name]) | set(auto_emails)
+                            )
 
         # Generate report data
         usage_breakdown = analyzer.get_usage_breakdown_by_level()
@@ -1357,31 +1595,35 @@ def main():
 
         st.divider()
 
-        # Cohort Analysis — dynamic
-        if CONFIG.cohorts:
-            st.subheader("👥 User Cohort Analysis")
+        # Cohort Analysis — always shown
+        st.subheader("👥 User Cohort Analysis")
 
-            tab_names = ["📊 Overview"] + [c.name for c in CONFIG.cohorts]
+        if not cohort_email_lists:
+            st.info(
+                "No cohorts defined. Enter cohort definitions above to see adoption tracking. "
+                "You can also define them in config.yaml."
+            )
+        else:
+            tab_names = ["📊 Overview"] + list(cohort_email_lists.keys())
             cohort_display_tabs = st.tabs(tab_names)
 
             # Get all cohort analyses
             cohort_analyses = {}
-            for cohort in CONFIG.cohorts:
-                emails = cohort_email_lists.get(cohort.name, cohort.emails)
+            for cohort_name, emails in cohort_email_lists.items():
                 if emails:
-                    cohort_analyses[cohort.name] = analyzer.get_cohort_analysis(emails, cohort.name)
+                    cohort_analyses[cohort_name] = analyzer.get_cohort_analysis(emails, cohort_name)
 
             # Overview Tab
             with cohort_display_tabs[0]:
                 st.markdown("### 📊 Cohort Adoption Summary")
 
-                overview_cols = st.columns(min(len(CONFIG.cohorts), 6))
-                for i, cohort in enumerate(CONFIG.cohorts):
+                overview_cols = st.columns(min(len(cohort_email_lists), 6))
+                for i, cohort_name in enumerate(cohort_email_lists.keys()):
                     with overview_cols[i % len(overview_cols)]:
-                        data = cohort_analyses.get(cohort.name, {})
+                        data = cohort_analyses.get(cohort_name, {})
                         rate = data.get("adoption_rate", 0) if data else 0
                         st.metric(
-                            f"{cohort.name} Adoption",
+                            f"{cohort_name} Adoption",
                             f"{rate:.0f}%",
                             f"{data.get('active_count', 0)}/{data.get('total_cohort', 0)}",
                         )
@@ -1389,12 +1631,12 @@ def main():
                 # Combined activity table
                 st.markdown("### 📈 All Active Users Across Cohorts")
                 all_active = []
-                for cohort in CONFIG.cohorts:
-                    data = cohort_analyses.get(cohort.name, {})
+                for cohort_name in cohort_email_lists.keys():
+                    data = cohort_analyses.get(cohort_name, {})
                     if data and data.get("active_users"):
                         for user in data["active_users"]:
                             user_copy = user.copy()
-                            user_copy["cohort"] = cohort.name
+                            user_copy["cohort"] = cohort_name
                             all_active.append(user_copy)
 
                 if all_active:
@@ -1453,10 +1695,10 @@ def main():
                     st.dataframe(non_users_display, use_container_width=True, hide_index=True)
 
             # Individual cohort tabs
-            for i, cohort in enumerate(CONFIG.cohorts):
+            for i, cohort_name in enumerate(cohort_email_lists.keys()):
                 with cohort_display_tabs[i + 1]:
-                    st.markdown(f"### {cohort.name}")
-                    display_cohort(cohort_analyses.get(cohort.name, {}), cohort.name)
+                    st.markdown(f"### {cohort_name}")
+                    display_cohort(cohort_analyses.get(cohort_name, {}), cohort_name)
 
         st.divider()
 
@@ -3489,6 +3731,52 @@ def main():
                             )
                         else:
                             st.success("No traces failed the automated checks with current thresholds.")
+
+
+# ---------------------------------------------------------------------------
+# Landing page (shown before data is loaded)
+# ---------------------------------------------------------------------------
+
+def _show_landing_page():
+    """Show a friendly getting-started page when no data is loaded."""
+    st.markdown("---")
+    st.markdown("### Welcome to the Phoenix PM Dashboard")
+    st.markdown(
+        "This dashboard gives you instant insights into your GenAI product's "
+        "usage, performance, and quality — powered by Phoenix Arize traces."
+    )
+
+    st.markdown("#### Get started in 3 steps")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(
+            "**1. Paste your Phoenix URL**\n\n"
+            "In the sidebar, paste either:\n"
+            "- A base URL like `https://phoenix.example.com:6006`\n"
+            "- Or a full spans URL like `.../projects/ABC/spans` "
+            "(the project ID will be extracted automatically)"
+        )
+    with col2:
+        st.markdown(
+            "**2. Pick a time range**\n\n"
+            "Choose Last 24 Hours, 7 Days, 30 Days, or a custom range. "
+            "The dashboard will pull traces from that window."
+        )
+    with col3:
+        st.markdown(
+            "**3. Click Load Data**\n\n"
+            "Hit the blue Load Data button. Once traces are loaded you will "
+            "see Executive Summary, Usage Analytics, Performance Metrics, and more."
+        )
+
+    st.markdown("---")
+    st.markdown(
+        "**No config.yaml needed.** Everything that only requires trace data works out of the box. "
+        "Features that need extra info (cohorts, meeting windows, locations) have inline UI inputs "
+        "right where they live — no config file editing required.\n\n"
+        "If you *do* have a `config.yaml`, it will pre-populate those UI inputs automatically."
+    )
 
 
 if __name__ == "__main__":
