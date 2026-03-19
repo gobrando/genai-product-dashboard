@@ -322,7 +322,7 @@ def load_data(
 def main():
     product_name = _get_product_name()
     st.title(f"📊 {product_name} — GenAI Product Dashboard")
-    st.markdown("*Analyze your GenAI product usage and quality metrics*")
+    st.markdown("*Analyze your GenAI product usage and quality metrics from Phoenix Arize trace logs*")
 
     # ------------------------------------------------------------------
     # Sidebar configuration
