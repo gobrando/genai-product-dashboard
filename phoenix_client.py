@@ -266,7 +266,8 @@ class PhoenixClient:
         project_id: Optional[str] = None,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
-        max_spans: int = 10000
+        max_spans: int = 10000,
+        progress_callback=None,
     ) -> List[Dict]:
         """
         Get all spans with pagination
@@ -276,6 +277,8 @@ class PhoenixClient:
             start_time: Optional start time filter (applied client-side)
             end_time: Optional end time filter (applied client-side)
             max_spans: Maximum total number of spans to fetch
+            progress_callback: Optional callable(spans_so_far, estimated_total)
+                called after each page is fetched, useful for progress bars.
 
         Returns:
             List of all spans
@@ -292,7 +295,7 @@ class PhoenixClient:
                 start_time=start_time,
                 end_time=end_time,
                 cursor=cursor,
-                limit=min(1000, max_spans - len(all_spans))
+                limit=min(5000, max_spans - len(all_spans))
             )
 
             spans = response.get('data', [])
@@ -338,6 +341,12 @@ class PhoenixClient:
 
             all_spans.extend(filtered_spans)
             cursor = response.get('next_cursor')
+
+            if progress_callback is not None:
+                try:
+                    progress_callback(len(all_spans), max_spans)
+                except Exception:
+                    pass  # never let a UI callback break fetching
 
             if not cursor:
                 break

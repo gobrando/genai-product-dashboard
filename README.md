@@ -1,110 +1,98 @@
 # Phoenix PM Dashboard
 
-An interactive intelligence dashboard for AI Product Managers to monitor GenAI product usage via Phoenix Arize trace logs. Connect to any Phoenix instance, configure your product's cohorts/locations/meeting schedules, and get actionable insights.
+**The analytics dashboard for AI Product Managers who need to understand how their GenAI product is actually being used.**
 
-## What It Does
+Connect to any [Phoenix Arize](https://phoenix.arize.com/) instance, paste the URL, and get instant visibility into adoption, usage patterns, performance, and quality — no coding or configuration required.
 
-- **Executive Summary** — KPIs for leadership: request volume, success rates, latency, token usage, model distribution
-- **Usage Analytics** — Organic vs planned usage, per-location breakdowns, cohort adoption tracking, workflow completion funnels
-- **Usage Report** — Per-cohort adoption rates, active/inactive user lists, resource category demand, geographic coverage
-- **Performance Metrics** — Latency percentiles over time, tail latency analysis, per-trace bottleneck breakdown, slowest users
-- **Log Explorer** — Downloadable trace list with latency/token correlation, span-level step breakdown
-- **Advanced Analytics** — Query pattern intelligence, resource effectiveness scoring, user journey analysis, drop-off detection
+<!-- Screenshots — replace these placeholders with actual captures -->
+| Executive Summary | Usage Analytics |
+|:-:|:-:|
+| ![Executive Summary](docs/screenshots/executive-summary.png) | ![Usage Analytics](docs/screenshots/usage-analytics.png) |
+
+| Performance Metrics | Log Explorer |
+|:-:|:-:|
+| ![Performance Metrics](docs/screenshots/performance-metrics.png) | ![Log Explorer](docs/screenshots/log-explorer.png) |
+
+> **Note:** Screenshot placeholders above. Add actual PNGs to `docs/screenshots/` to complete.
+
+---
 
 ## Quick Start
 
 ```bash
-# 1. Clone
-git clone <repo-url> && cd phoenix-pm-dashboard
-
-# 2. Install
-python -m venv venv && source venv/bin/activate
+# 1. Install
 pip install -r requirements.txt
 
-# 3. Configure
-cp .env.example .env        # Add your Phoenix URL + API key
-cp config.example.yaml config.yaml  # Customize for your product
-
-# 4. Run
+# 2. Run
 streamlit run dashboard.py
+
+# 3. Paste your Phoenix URL in the sidebar and click "Load Data"
 ```
 
-The dashboard opens at `http://localhost:8501`.
+That's it. No config files, no environment variables, no database setup.
+
+---
+
+## What You'll See
+
+### Executive Summary
+High-level KPIs for leadership: request volume, success rates, latency, token usage, and model distribution at a glance.
+
+### Usage Analytics
+Understand *how* people are using your product: organic vs. planned usage, per-location breakdowns, cohort adoption tracking, and workflow completion funnels.
+
+### Usage Report
+Per-cohort adoption rates, active and inactive user lists, resource category demand, and geographic coverage — ready to drop into a stakeholder update.
+
+### Performance Metrics
+Latency percentiles over time, tail latency analysis, per-trace-type bottleneck breakdown, and slowest-user identification so you know where to push engineering.
+
+### Log Explorer
+A downloadable trace list with latency vs. token correlation and span-level step breakdowns. Find the exact request that caused an issue.
+
+### Advanced Analytics
+Query pattern intelligence, resource effectiveness scoring, user journey analysis, and drop-off detection to surface product improvement opportunities.
+
+---
 
 ## Configuration
 
-All product-specific settings live in `config.yaml`. See `config.example.yaml` for the full schema with comments.
+**Phoenix PM Dashboard is zero-config by default.** Every feature that only needs trace data works the moment you paste a URL. Features that require extra context (cohorts, meeting schedules, locations) have inline UI inputs right in the dashboard — no file editing needed.
 
-### Minimal config
+### Optional: `config.yaml`
 
-```yaml
-product:
-  name: "My AI Product"
+If you want to pre-populate the UI inputs (useful when you reload the dashboard often), create a `config.yaml` alongside the app. See `config.example.yaml` for the full schema.
 
-excluded_users:
-  emails:
-    - "admin@mycompany.com"
-  domain_patterns:
-    - "@internal\\.[a-z0-9.-]+$"
-```
-
-### Full config sections
-
-| Section | Purpose |
-|---------|---------|
-| `product` | Product name, optional secondary Phoenix source |
-| `excluded_users` | Emails and domain patterns to filter out of all analytics |
-| `priority_email_domains` | Preferred domains when extracting user identity from traces |
-| `trace_types` | Regex patterns to classify root span names into trace types |
-| `cohorts` | Named user groups to track adoption (e.g., pilot waves) |
-| `locations` | Domain-based user grouping for location breakdowns |
-| `meeting_windows` | Scheduled sessions to exclude from organic usage counts |
+| Section | What it pre-fills |
+|---------|-------------------|
+| `product` | Product name displayed in the header |
+| `excluded_users` | Emails and domain patterns filtered from all analytics |
+| `trace_types` | Regex patterns that classify root span names into trace types |
+| `cohorts` | Named user groups for adoption tracking (e.g., pilot waves) |
+| `locations` | Domain-based grouping for location breakdowns |
+| `meeting_windows` | Scheduled sessions excluded from organic usage counts |
 | `geographic` | Service area zip codes and city name mappings |
-| `categories` | Keyword-based query classification |
+| `categories` | Keyword-based query classification rules |
 
-### Environment variables
+### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `PHOENIX_API_URL` | Yes | Your Phoenix instance URL |
-| `PHOENIX_API_KEY` | No | API key (if auth required) |
-| `PHOENIX_PROJECT_ID` | No | Default project ID |
-| `DASHBOARD_CONFIG` | No | Path to config file (default: `config.yaml`) |
+| `PHOENIX_API_URL` | No | Default Phoenix URL (overridden by sidebar input) |
+| `PHOENIX_API_KEY` | No | API key if your Phoenix instance requires auth |
 
-## How It Works
+---
 
-1. **Connects** to your Phoenix Arize instance via GraphQL
-2. **Fetches** spans with pagination and client-side time filtering
-3. **Groups** spans into traces and extracts user identity, query, category, location
-4. **Filters** out internal/test users based on your config
-5. **Classifies** traces by type using your configured patterns
-6. **Renders** interactive Plotly charts in a multi-tab Streamlit interface
+## For Developers
 
-## Adapting for Your Product
+The dashboard is designed to be extended without touching core logic:
 
-The dashboard was designed to be product-agnostic. Here's how to customize it:
+- **Add trace types** — define regex patterns in `config.yaml` under `trace_types`, or type them into the UI
+- **Add cohorts** — list user emails under `cohorts` in config, or paste them in the Usage Report tab
+- **Add query categories** — add keyword lists under `categories` in config
+- **Add locations** — map domain patterns to location names under `locations`
 
-**If your product has user cohorts** (pilot waves, beta groups):
-- Add them to `cohorts` in config.yaml with email lists
-- The Usage Report tab will show per-cohort adoption rates
-
-**If you have scheduled demo/training sessions**:
-- Add meeting windows to `meeting_windows` in config.yaml
-- The Usage Analytics tab will separate organic from planned usage
-
-**If your product serves multiple sites/locations**:
-- Define locations with domain patterns in config.yaml
-- The dashboard will break down usage by location
-
-**If your product has distinct workflow steps** (search → generate → email):
-- Define trace types in config.yaml matching your root span names
-- The dashboard will track workflow completion funnels
-
-**If you need query categorization**:
-- Define categories with keywords in config.yaml
-- Queries will be auto-classified for demand analysis
-
-## Project Structure
+### Project Structure
 
 ```
 phoenix-pm-dashboard/
@@ -112,14 +100,14 @@ phoenix-pm-dashboard/
 ├── data_analyzer.py      # Trace analysis engine
 ├── phoenix_client.py     # Phoenix GraphQL API client
 ├── config.py             # Config loader and helpers
-├── config.example.yaml   # Example configuration (copy to config.yaml)
-├── requirements.txt      # Python dependencies
-├── .env.example          # Environment variable template
-└── README.md             # This file
+├── config.example.yaml   # Example configuration
+├── requirements.txt
+└── README.md
 ```
+
+---
 
 ## Requirements
 
 - Python 3.9+
 - Access to a Phoenix Arize instance
-- Optional: API key for authenticated Phoenix instances

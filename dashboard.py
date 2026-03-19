@@ -244,35 +244,47 @@ def _get_location_for_email_dynamic(
 # Data loading
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
-def load_data(
-    _client,
+def _load_data_cache_key(
+    project_id, start_time, end_time, max_spans, cache_bust, secondary_project_id
+):
+    """Build a hashable cache key for the manual session-state data cache."""
+    return f"{project_id}|{start_time}|{end_time}|{max_spans}|{cache_bust}|{secondary_project_id}"
+
+
+def _fetch_data(
+    client,
     project_id,
     start_time,
     end_time,
     max_spans,
-    cache_bust: str = "0",
-    _secondary_client=None,
-    secondary_project_id: str = "",
+    secondary_client=None,
+    secondary_project_id="",
+    progress_callback=None,
 ):
-    """Load spans data from one or two Phoenix projects and dedupe by span identity."""
+    """Fetch spans from one or two Phoenix projects, dedupe, and return result dict.
+
+    This is the actual I/O work; caching is handled by the caller via
+    ``st.session_state``.
+    """
     if start_time and end_time and end_time <= start_time:
         raise ValueError("end_time must be after start_time")
 
-    primary_spans = _client.get_all_spans(
+    primary_spans = client.get_all_spans(
         project_id=project_id,
         start_time=start_time,
         end_time=end_time,
         max_spans=max_spans,
+        progress_callback=progress_callback,
     )
 
     secondary_spans = []
-    if _secondary_client and secondary_project_id:
-        secondary_spans = _secondary_client.get_all_spans(
+    if secondary_client and secondary_project_id:
+        secondary_spans = secondary_client.get_all_spans(
             project_id=secondary_project_id,
             start_time=start_time,
             end_time=end_time,
             max_spans=max_spans,
+            progress_callback=progress_callback,
         )
 
     merged = []
@@ -541,19 +553,52 @@ def main():
                             or _extract_project_id_from_url(secondary_url)
                         )
 
-            with st.spinner("Loading trace data..."):
-                load_result = load_data(
+            # --- Session-state caching with progress bar ---
+            cache_key = _load_data_cache_key(
+                project_id if project_id else None,
+                start_time,
+                end_time,
+                max_spans,
+                st.session_state.get("cache_bust", "0"),
+                secondary_project_final,
+            )
+            cached_key = st.session_state.get("_data_cache_key")
+            if cached_key == cache_key and "_data_cache_result" in st.session_state:
+                load_result = st.session_state["_data_cache_result"]
+                load_duration = st.session_state.get("_data_load_duration", 0)
+            else:
+                import time as _time
+
+                progress_bar = st.progress(0, text="Loading trace data...")
+
+                def _update_progress(fetched, total):
+                    pct = min(fetched / max(total, 1), 1.0)
+                    progress_bar.progress(
+                        pct,
+                        text=f"Loading trace data... {fetched:,} / {total:,} spans",
+                    )
+
+                t0 = _time.time()
+                load_result = _fetch_data(
                     client,
                     project_id if project_id else None,
                     start_time,
                     end_time,
                     max_spans,
-                    st.session_state.get("cache_bust", "0"),
-                    secondary_client,
-                    secondary_project_final,
+                    secondary_client=secondary_client,
+                    secondary_project_id=secondary_project_final,
+                    progress_callback=_update_progress,
                 )
-                spans = load_result.get("spans", []) if isinstance(load_result, dict) else load_result
-                source_stats = load_result.get("source_stats", {}) if isinstance(load_result, dict) else {}
+                load_duration = _time.time() - t0
+                progress_bar.empty()  # remove the progress bar
+
+                # Store in session state for next rerun
+                st.session_state["_data_cache_key"] = cache_key
+                st.session_state["_data_cache_result"] = load_result
+                st.session_state["_data_load_duration"] = load_duration
+
+            spans = load_result.get("spans", []) if isinstance(load_result, dict) else load_result
+            source_stats = load_result.get("source_stats", {}) if isinstance(load_result, dict) else {}
 
             if not spans:
                 msg = "No data found for the selected time range."
@@ -567,7 +612,7 @@ def main():
             st.session_state.analyzer = TraceAnalyzer(spans, config=CONFIG)
             st.session_state.source_stats = source_stats
             st.session_state.data_loaded = True
-            st.success(f"Loaded {len(spans)} spans successfully!")
+            st.success(f"Loaded {len(spans):,} spans in {load_duration:.1f}s")
             if source_stats:
                 st.caption(
                     "Source counts — "
@@ -3989,41 +4034,45 @@ def _show_landing_page():
     st.markdown("---")
     st.markdown("### Welcome to the Phoenix PM Dashboard")
     st.markdown(
-        "This dashboard gives you instant insights into your GenAI product's "
-        "usage, performance, and quality — powered by Phoenix Arize traces."
+        "Instant visibility into your GenAI product's adoption, usage patterns, "
+        "performance, and quality — powered by Phoenix Arize traces."
     )
+    st.caption("Built for AI Product Managers. No coding required.")
 
+    st.markdown("")
     st.markdown("#### Get started in 3 steps")
 
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown(
-            "**1. Paste your Phoenix URL**\n\n"
-            "In the sidebar, paste either:\n"
-            "- A base URL like `https://phoenix.example.com:6006`\n"
-            "- Or a full spans URL like `.../projects/ABC/spans` "
-            "(the project ID will be extracted automatically)"
+            "##### :one: Paste your Phoenix URL\n\n"
+            "Open the sidebar and paste your Phoenix URL. "
+            "If you use a full spans URL, the project ID is extracted automatically."
         )
     with col2:
         st.markdown(
-            "**2. Pick a time range**\n\n"
-            "Choose Last 24 Hours, 7 Days, 30 Days, or a custom range. "
-            "The dashboard will pull traces from that window."
+            "##### :two: Pick a time range\n\n"
+            "Choose Last 24 Hours, 7 Days, 30 Days, or set a custom range."
         )
     with col3:
         st.markdown(
-            "**3. Click Load Data**\n\n"
-            "Hit the blue Load Data button. Once traces are loaded you will "
-            "see Executive Summary, Usage Analytics, Performance Metrics, and more."
+            "##### :three: Click Load Data\n\n"
+            "Hit the blue **Load Data** button and your dashboard will populate in seconds."
         )
 
-    st.markdown("---")
-    st.markdown(
-        "**No config.yaml needed.** Everything that only requires trace data works out of the box. "
-        "Features that need extra info (cohorts, meeting windows, locations) have inline UI inputs "
-        "right where they live — no config file editing required.\n\n"
-        "If you *do* have a `config.yaml`, it will pre-populate those UI inputs automatically."
-    )
+    st.markdown("")
+    st.markdown("#### What you'll see")
+
+    tabs_info = [
+        ("**Executive Summary**", "KPIs at a glance — request volume, success rates, latency, and model usage."),
+        ("**Usage Analytics**", "Organic vs. planned usage, location breakdowns, cohort tracking, and workflow funnels."),
+        ("**Usage Report**", "Per-cohort adoption, active user lists, and geographic coverage for stakeholder updates."),
+        ("**Performance Metrics**", "Latency percentiles, outlier analysis, and per-trace bottleneck breakdown."),
+        ("**Log Explorer**", "Downloadable trace list with latency vs. token correlation."),
+        ("**Advanced Analytics**", "Query patterns, resource effectiveness, user journeys, and drop-off detection."),
+    ]
+    for name, desc in tabs_info:
+        st.markdown(f"- {name} — {desc}")
 
 
 if __name__ == "__main__":
