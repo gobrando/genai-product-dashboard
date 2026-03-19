@@ -4,6 +4,8 @@
 
 Connect to any [Phoenix Arize](https://phoenix.arize.com/) instance, paste the URL, and get instant visibility into adoption, usage patterns, performance, and quality — no coding or configuration required.
 
+![Getting Started](docs/screenshots/getting-started.png)
+
 ---
 
 ## Quick Start
@@ -27,8 +29,14 @@ That's it. No config files, no environment variables, no database setup.
 ### Executive Summary
 High-level KPIs for leadership: request volume, success rates, latency, token usage, and model distribution at a glance.
 
+![Executive Summary](docs/screenshots/executive-summary.png)
+
 ### Usage Analytics
 Understand *how* people are using your product: organic vs. planned usage, per-location breakdowns, cohort adoption tracking, and workflow completion funnels.
+
+![Usage Analytics — Trace Volume](docs/screenshots/usage-analytics.png)
+
+![Usage Analytics — Organic Usage](docs/screenshots/organic-usage.png)
 
 ### Usage Report
 Per-cohort adoption rates, active and inactive user lists, resource category demand, and geographic coverage — ready to drop into a stakeholder update.
