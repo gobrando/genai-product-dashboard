@@ -490,20 +490,14 @@ def main():
         st.divider()
 
         # Load / refresh controls
+        # Cache bust key: changes whenever Load Data is clicked so stale data is never served
         if "cache_bust" not in st.session_state:
             st.session_state.cache_bust = "0"
 
-        col1, col2 = st.columns(2)
-        with col1:
-            load_button = st.button("🔄 Load Data", type="primary", use_container_width=True)
-        with col2:
-            force_refresh = st.button(
-                "♻️ Force Refresh",
-                help="Bypasses the cache and re-pulls from Phoenix immediately.",
-                use_container_width=True,
-            )
-            if force_refresh:
-                st.session_state.cache_bust = str(datetime.now(timezone.utc).timestamp())
+        load_button = st.button("🔄 Load Data", type="primary", use_container_width=True)
+        if load_button:
+            # Always bust the cache on explicit load
+            st.session_state.cache_bust = str(datetime.now(timezone.utc).timestamp())
 
     # ------------------------------------------------------------------
     # Session state
