@@ -597,22 +597,31 @@ def main():
             f"(latest: {source_stats.get('secondary_latest', 'n/a')})."
         )
 
-    # --- Date coverage check (Fix 3) ---
+    # --- Date coverage check ---
     if (
         not analyzer.traces_df.empty
         and "trace_start" in analyzer.traces_df.columns
     ):
         _ts_col = pd.to_datetime(analyzer.traces_df["trace_start"], errors="coerce", utc=True)
         _actual_end = _ts_col.max()
+        _actual_start = _ts_col.min()
         if pd.notna(_actual_end) and pd.notna(end_time):
             _end_time_ts = pd.Timestamp(end_time, tz="UTC") if not hasattr(end_time, "tzinfo") or end_time.tzinfo is None else pd.Timestamp(end_time)
             if _actual_end < _end_time_ts - pd.Timedelta(hours=12):
                 _total_spans = len(analyzer.df) if analyzer.df is not None else 0
-                st.warning(
-                    f"Data only covers through **{_actual_end.strftime('%Y-%m-%d %H:%M UTC')}**. "
-                    f"Your date range may have more data than the current span limit ({_total_spans:,}). "
-                    f"Expand **Advanced** in the sidebar to increase the limit."
-                )
+                _spans_hit_limit = _total_spans >= max_spans
+                if _spans_hit_limit:
+                    st.warning(
+                        f"Data only covers through **{_actual_end.strftime('%Y-%m-%d %H:%M UTC')}**. "
+                        f"The span limit ({max_spans:,}) was reached — expand **Advanced** in the sidebar to increase it."
+                    )
+                else:
+                    st.info(
+                        f"Latest trace in this project is from **{_actual_end.strftime('%Y-%m-%d %H:%M UTC')}**. "
+                        f"No newer data exists in Phoenix for the selected project. "
+                        f"If you expect more recent data, check that your product is sending traces to this project, "
+                        f"or try selecting a different project."
+                    )
 
     # --- Global outlier thresholds for latency charts (Fix 2) ---
     if not analyzer.traces_df.empty and "trace_duration_s" in analyzer.traces_df.columns:
