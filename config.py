@@ -258,6 +258,37 @@ def classify_trace_type(
     return "other"
 
 
+BUILTIN_ZIP_TO_CITY = {
+    # Austin, TX area
+    '78701': 'Austin', '78702': 'Austin', '78703': 'Austin', '78704': 'Austin',
+    '78705': 'Austin', '78712': 'Austin', '78721': 'Austin', '78722': 'Austin',
+    '78723': 'Austin', '78724': 'Austin', '78725': 'Austin', '78726': 'Austin',
+    '78727': 'Austin', '78728': 'Austin', '78729': 'Austin', '78730': 'Austin',
+    '78731': 'Austin', '78732': 'Austin', '78733': 'Austin', '78734': 'Austin',
+    '78735': 'Austin', '78736': 'Austin', '78737': 'Austin', '78738': 'Austin',
+    '78739': 'Austin', '78741': 'Austin', '78742': 'Austin', '78744': 'Austin',
+    '78745': 'Austin', '78746': 'Austin', '78747': 'Austin', '78748': 'Austin',
+    '78749': 'Austin', '78750': 'Austin', '78751': 'Austin', '78752': 'Austin',
+    '78753': 'Austin', '78754': 'Austin', '78756': 'Austin', '78757': 'Austin',
+    '78758': 'Austin', '78759': 'Austin',
+    # Surrounding TX cities
+    '78613': 'Cedar Park', '78641': 'Leander', '78642': 'Leander',
+    '78664': 'Round Rock', '78665': 'Round Rock', '78681': 'Round Rock',
+    '78660': 'Pflugerville', '78626': 'Georgetown', '78628': 'Georgetown',
+    '78633': 'Georgetown', '78610': 'Buda', '78640': 'Kyle', '78666': 'San Marcos',
+    '78644': 'Lockhart', '78617': 'Del Valle', '78653': 'Manor', '78634': 'Hutto',
+    '78654': 'Hutto', '78602': 'Bastrop', '78621': 'Elgin', '78645': 'Lago Vista',
+    '76574': 'Taylor', '78669': 'Spicewood',
+    # Pennsylvania (Keystone/Goodwill)
+    '18102': 'Allentown, PA', '17602': 'Lancaster, PA', '19604': 'Reading, PA',
+    '17101': 'Harrisburg, PA', '19601': 'Reading, PA', '17603': 'Lancaster, PA',
+    # Virginia
+    '23454': 'Virginia Beach, VA',
+    # Other TX
+    '77554': 'Galveston, TX', '75835': 'Palestine, TX', '78028': 'Kerrville, TX',
+}
+
+
 BUILTIN_CATEGORIES = {
     'Employment & Job Training': ['job', 'employment', 'career', 'work', 'hiring', 'resume', 'training program', 'workforce', 'vocational', 'apprentice', 'certification', 'cdl', 'cna'],
     'Housing & Shelter': ['housing', 'apartment', 'rent', 'shelter', 'homeless', 'eviction', 'mortgage', 'section 8', 'affordable housing', 'transitional housing'],

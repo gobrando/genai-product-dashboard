@@ -1135,10 +1135,10 @@ class TraceAnalyzer:
 
         df_time = self.traces_df.set_index('trace_start')
 
-        # Aggregate basic metrics
+        # Aggregate basic metrics (use median for duration — robust to outliers)
         time_series = df_time.groupby(pd.Grouper(freq=freq)).agg({
             'trace_id': 'count',
-            'trace_duration_s': 'mean',
+            'trace_duration_s': 'median',
             'total_tokens': 'sum'
         }).reset_index()
 
@@ -1303,17 +1303,20 @@ class TraceAnalyzer:
                 'total_references': 0
             }
 
-        # Use config-based zip-to-city mapping
+        # Use config-based zip-to-city mapping, with builtin fallback
+        from config import BUILTIN_ZIP_TO_CITY
         zip_to_city = self.config.zip_to_city
 
         # Count occurrences
         zip_counts = Counter(zip_codes)
         total_references = sum(zip_counts.values())
 
-        # Resolve city names: config mapping first, then zip-prefix heuristic
+        # Resolve city names: user config first, then builtin mapping, then Unknown
         def _resolve_city(zc: str) -> str:
             if zc in zip_to_city:
                 return zip_to_city[zc]
+            if zc in BUILTIN_ZIP_TO_CITY:
+                return BUILTIN_ZIP_TO_CITY[zc]
             return 'Unknown'
 
         # Build the set of all configured region zip codes

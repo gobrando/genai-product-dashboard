@@ -436,9 +436,9 @@ def main():
             "Max Spans to Load",
             min_value=100,
             max_value=50000,
-            value=10000,
+            value=20000,
             step=1000,
-            help="Maximum number of traces to analyze",
+            help="Maximum number of spans to load. Increase if your date range is cut short.",
         )
 
         # Product name
@@ -593,6 +593,36 @@ def main():
             f"Secondary: {source_stats.get('secondary_count', 0):,} spans "
             f"(latest: {source_stats.get('secondary_latest', 'n/a')})."
         )
+
+    # --- Date coverage check (Fix 3) ---
+    if (
+        not analyzer.traces_df.empty
+        and "trace_start" in analyzer.traces_df.columns
+    ):
+        _ts_col = pd.to_datetime(analyzer.traces_df["trace_start"], errors="coerce", utc=True)
+        _actual_end = _ts_col.max()
+        if pd.notna(_actual_end) and pd.notna(end_time):
+            _end_time_ts = pd.Timestamp(end_time, tz="UTC") if not hasattr(end_time, "tzinfo") or end_time.tzinfo is None else pd.Timestamp(end_time)
+            if _actual_end < _end_time_ts - pd.Timedelta(hours=12):
+                _total_spans = len(analyzer.df) if analyzer.df is not None else 0
+                st.warning(
+                    f"Data only covers through **{_actual_end.strftime('%Y-%m-%d %H:%M UTC')}**. "
+                    f"Your {_total_spans:,} span limit may be too low — try increasing **Max Spans** in the sidebar."
+                )
+
+    # --- Global outlier thresholds for latency charts (Fix 2) ---
+    if not analyzer.traces_df.empty and "trace_duration_s" in analyzer.traces_df.columns:
+        _dur = pd.to_numeric(analyzer.traces_df["trace_duration_s"], errors="coerce").dropna()
+        _dur = _dur[_dur > 0]
+        if not _dur.empty:
+            _latency_p95 = float(_dur.quantile(0.95))
+            _latency_p99 = float(_dur.quantile(0.99))
+            _latency_median = float(_dur.median())
+            _outlier_cap = max(_latency_p99, _latency_p95 * 3)
+        else:
+            _latency_p95 = _latency_p99 = _latency_median = _outlier_cap = 60.0
+    else:
+        _latency_p95 = _latency_p99 = _latency_median = _outlier_cap = 60.0
 
     # Detect trace types dynamically from data
     detected_trace_types = _detect_trace_types(analyzer.traces_df)
@@ -857,15 +887,17 @@ def main():
             fig.update_layout(height=600, showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
 
-            # Average duration over time
-            st.subheader("⏱️ Average Trace Duration Over Time")
+            # Median duration over time (robust to outliers)
+            st.subheader("⏱️ Median Trace Duration Over Time")
+            _dur_cap = 2 * _latency_median if _latency_median > 0 else 60
             fig_duration = px.line(
                 trace_time_series,
                 x="timestamp",
                 y="avg_duration",
-                title="Average Trace Duration",
+                title="Median Trace Duration Over Time",
                 labels={"avg_duration": "Duration (s)", "timestamp": "Time"},
             )
+            fig_duration.update_layout(yaxis_range=[0, _dur_cap])
             st.plotly_chart(fig_duration, use_container_width=True)
 
         # ----- Organic usage -----
@@ -2061,12 +2093,14 @@ def main():
                     x=latency_over_time["timestamp"], y=latency_over_time["p95"],
                     name="p95", line=dict(color="#d62728"),
                 ))
+                _percentile_y_cap = 2 * _latency_p95 if _latency_p95 > 0 else 60
                 fig.update_layout(
                     height=420,
                     xaxis_title="Time",
                     yaxis_title="Latency (s)",
                     title="Latency Percentiles Over Time",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    yaxis_range=[0, _percentile_y_cap],
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -2128,6 +2162,11 @@ def main():
             by_type["trace_duration_s"] = pd.to_numeric(by_type["trace_duration_s"], errors="coerce")
             by_type = by_type.dropna(subset=["trace_duration_s"])
             by_type = by_type[by_type["trace_duration_s"] > 0]
+            _n_before_cap = len(by_type)
+            by_type = by_type[by_type["trace_duration_s"] <= _outlier_cap]
+            _n_filtered = _n_before_cap - len(by_type)
+            if _n_filtered > 0:
+                st.caption(f"Filtered {_n_filtered} outlier trace(s) above {_outlier_cap:.1f}s for chart clarity.")
             fig = px.box(
                 by_type,
                 x="trace_type",
@@ -2271,6 +2310,13 @@ def main():
                         view = trace_spans[["name", "latency_s", "start_time", "end_time"]].copy() if "name" in trace_spans.columns else trace_spans[["latency_s", "start_time", "end_time"]].copy()
                         if trace_total and trace_total > 0:
                             view["pct_of_trace"] = (view["latency_s"] / trace_total * 100).round(1)
+
+                        # Warn if this trace looks anomalous
+                        if trace_total and trace_total > 10 * _latency_median and _latency_median > 0:
+                            st.warning(
+                                f"This trace ({trace_total:.1f}s) is >{10}x the median ({_latency_median:.1f}s) "
+                                "— it appears anomalous. Span proportions may still be informative."
+                            )
 
                         fig = px.bar(
                             view,
