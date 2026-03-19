@@ -57,12 +57,58 @@ class PhoenixClient:
             raise
 
     def get_projects(self) -> List[Dict]:
-        """Get all projects"""
+        """Get all projects via REST API"""
         try:
             response = self._make_request('GET', '/v1/projects')
             return response.get('data', [])
         except Exception as e:
-            logger.error(f"Failed to fetch projects: {e}")
+            logger.error(f"Failed to fetch projects via REST: {e}")
+            return []
+
+    def get_projects_graphql(self) -> List[Dict]:
+        """Get all projects via GraphQL (more reliable across Phoenix versions).
+        Returns list of dicts with 'id', 'name', and optional metadata."""
+        query = """
+        {
+          projects {
+            edges {
+              node {
+                id
+                name
+              }
+            }
+          }
+        }
+        """
+        try:
+            url = f"{self.base_url}/graphql"
+            headers = self.session.headers.copy()
+            headers['Content-Type'] = 'application/json'
+            response = requests.post(
+                url,
+                headers=headers,
+                json={'query': query},
+                timeout=15
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if 'errors' in data:
+                logger.warning(f"GraphQL project listing errors: {data['errors']}")
+                return []
+
+            edges = data.get('data', {}).get('projects', {}).get('edges', [])
+            projects = []
+            for edge in edges:
+                node = edge.get('node', {})
+                if node.get('id'):
+                    projects.append({
+                        'id': node['id'],
+                        'name': node.get('name', node['id']),
+                    })
+            return projects
+        except Exception as e:
+            logger.error(f"Failed to fetch projects via GraphQL: {e}")
             return []
 
     def get_spans(

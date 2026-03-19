@@ -136,7 +136,26 @@ class TraceAnalyzer:
             attributes = span.get('attributes', {})
             processed['input'] = attributes.get('input', attributes.get('llm.input_messages', ''))
             processed['output'] = attributes.get('output', attributes.get('llm.output_messages', ''))
-            processed['model'] = attributes.get('llm.model_name', attributes.get('model', ''))
+
+            # Model name: check multiple common Phoenix attribute paths
+            model_name = (
+                attributes.get('llm.model_name')
+                or attributes.get('llm.model')
+                or attributes.get('model')
+                or attributes.get('model_name')
+                or ''
+            )
+            # Check nested dict: {"llm": {"model_name": "..."}}
+            if not model_name and isinstance(attributes.get('llm'), dict):
+                llm_info = attributes['llm']
+                model_name = llm_info.get('model_name') or llm_info.get('model') or ''
+            # Check nested dict: {"metadata": {"model": "..."}}
+            if not model_name and isinstance(attributes.get('metadata'), dict):
+                model_name = attributes['metadata'].get('model') or attributes['metadata'].get('model_name') or ''
+            # Unwrap dict values like {"value": "gpt-5-mini"}
+            if isinstance(model_name, dict):
+                model_name = model_name.get('value', str(model_name))
+            processed['model'] = str(model_name).strip() if model_name else ''
             processed['token_count_prompt'] = attributes.get('llm.token_count.prompt', 0)
             processed['token_count_completion'] = attributes.get('llm.token_count.completion', 0)
             processed['token_count_total'] = attributes.get('llm.token_count.total', 0)
@@ -244,7 +263,9 @@ class TraceAnalyzer:
 
         # Model usage
         if 'model' in self.df.columns:
-            stats['models_used'] = self.df['model'].value_counts().to_dict()
+            model_series = self.df['model'].replace('', pd.NA).dropna()
+            if not model_series.empty:
+                stats['models_used'] = model_series.value_counts().to_dict()
 
         return stats
 

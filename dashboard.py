@@ -38,7 +38,7 @@ CONFIG = load_config()
 _initial_product_name = CONFIG.product_name or "My AI Product"
 
 st.set_page_config(
-    page_title=f"{_initial_product_name} — Phoenix Dashboard",
+    page_title=f"{_initial_product_name} — GenAI Product Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -98,6 +98,19 @@ def _cohort_color(idx: int, cohort) -> str:
 def get_phoenix_client(api_url, api_key):
     """Initialize Phoenix client (cached)."""
     return PhoenixClient(api_url, api_key)
+
+
+@st.cache_data(ttl=300)
+def _fetch_projects(api_url, api_key):
+    """Fetch available projects from Phoenix (cached 5 min)."""
+    try:
+        client = PhoenixClient(api_url, api_key)
+        projects = client.get_projects_graphql()
+        if not projects:
+            projects = client.get_projects()
+        return projects
+    except Exception:
+        return []
 
 
 def _extract_project_id_from_url(url: str) -> str:
@@ -308,19 +321,28 @@ def load_data(
 
 def main():
     product_name = _get_product_name()
-    st.title(f"📊 {product_name} — Phoenix Analytics Dashboard")
+    st.title(f"📊 {product_name} — GenAI Product Dashboard")
     st.markdown("*Analyze your GenAI product usage and quality metrics*")
 
     # ------------------------------------------------------------------
     # Sidebar configuration
     # ------------------------------------------------------------------
+
+    # Initialize saved credentials from env or previous session
+    if "_saved_url" not in st.session_state:
+        st.session_state["_saved_url"] = os.getenv("PHOENIX_API_URL", "")
+    if "_saved_api_key" not in st.session_state:
+        st.session_state["_saved_api_key"] = os.getenv("PHOENIX_API_KEY", "")
+    if "_saved_project_id" not in st.session_state:
+        st.session_state["_saved_project_id"] = os.getenv("PHOENIX_PROJECT_ID", "")
+
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # API Configuration
+        # API Configuration — persisted via session state keys
         raw_url = st.text_input(
             "Phoenix URL",
-            value=os.getenv("PHOENIX_API_URL", ""),
+            key="_saved_url",
             placeholder="https://phoenix.example.com:6006 or full spans URL",
             help="Paste your Phoenix instance URL or a full spans URL (e.g. .../projects/ABC/spans).",
         )
@@ -331,10 +353,57 @@ def main():
 
         api_key = st.text_input(
             "API Key (optional)",
-            value=os.getenv("PHOENIX_API_KEY", ""),
+            key="_saved_api_key",
             type="password",
             help="Leave empty if no authentication required",
         )
+
+        # Project selection — auto-discover from Phoenix when possible
+        env_project_id = os.getenv("PHOENIX_PROJECT_ID", "")
+        saved_project_id = st.session_state.get("_saved_project_id", "")
+        discovered_projects = []
+        if api_url and api_url.startswith("http"):
+            discovered_projects = _fetch_projects(api_url, api_key if api_key else None)
+
+        if discovered_projects:
+            # Sort: non-default projects first, then alphabetically by name
+            discovered_projects.sort(
+                key=lambda p: (p["name"].lower() == "default", p["name"].lower())
+            )
+
+            # Build options: "name (id)" for display, actual id for value
+            project_options = [
+                {"label": f"{p['name']} ({p['id']})", "id": p["id"], "name": p["name"]}
+                for p in discovered_projects
+            ]
+            display_labels = [p["label"] for p in project_options]
+
+            # Determine default selection: prefer saved > env > URL-extracted > first non-default
+            default_idx = 0
+            preferred_id = saved_project_id or env_project_id or auto_project_id
+            if preferred_id:
+                for i, p in enumerate(project_options):
+                    if p["id"] == preferred_id:
+                        default_idx = i
+                        break
+
+            selected_label = st.selectbox(
+                "Project",
+                options=display_labels,
+                index=default_idx,
+                key="_project_selector",
+                help="Projects discovered from your Phoenix instance. Select the project that contains your product's traces.",
+            )
+            project_id = project_options[display_labels.index(selected_label)]["id"]
+            # Persist the selection
+            st.session_state["_saved_project_id"] = project_id
+        else:
+            # Fallback to manual text input
+            project_id = st.text_input(
+                "Project ID",
+                value=saved_project_id or env_project_id or auto_project_id,
+                help="Auto-filled when you paste a full spans URL. Or enter your Phoenix project ID manually.",
+            )
 
         st.divider()
 
@@ -370,12 +439,6 @@ def main():
             value=10000,
             step=1000,
             help="Maximum number of traces to analyze",
-        )
-
-        project_id = st.text_input(
-            "Project ID",
-            value=os.getenv("PHOENIX_PROJECT_ID", "") or auto_project_id,
-            help="Auto-filled when you paste a full spans URL. You can also set it manually.",
         )
 
         # Product name
@@ -490,7 +553,12 @@ def main():
                 source_stats = load_result.get("source_stats", {}) if isinstance(load_result, dict) else {}
 
             if not spans:
-                st.error("No data found. Please check your configuration and filters.")
+                msg = "No data found for the selected time range."
+                if not project_id:
+                    msg += " **No project selected** — try selecting a project from the dropdown, or paste a full spans URL."
+                else:
+                    msg += f" Project ID: `{project_id}`. Try a wider time range or check that this project has trace data."
+                st.error(msg)
                 return
 
             st.session_state.analyzer = TraceAnalyzer(spans, config=CONFIG)
@@ -615,12 +683,23 @@ def main():
             # Model usage breakdown
             if stats.get("models_used"):
                 st.subheader("Model Usage Distribution")
-                model_df = pd.DataFrame(
-                    list(stats["models_used"].items()),
-                    columns=["Model", "Requests"],
-                )
-                fig = px.pie(model_df, values="Requests", names="Model", title="Requests by Model")
-                st.plotly_chart(fig, use_container_width=True)
+                # Filter out empty/zero model names
+                model_items = {
+                    k: v for k, v in stats["models_used"].items()
+                    if k and str(k).strip() and str(k).strip() != "0"
+                }
+                if model_items:
+                    # Clean up model names: strip date suffixes like "-2025-11-13"
+                    cleaned = {}
+                    for name, count in model_items.items():
+                        clean_name = re.sub(r'-\d{4}-\d{2}-\d{2}$', '', str(name))
+                        cleaned[clean_name] = cleaned.get(clean_name, 0) + count
+                    model_df = pd.DataFrame(
+                        list(cleaned.items()),
+                        columns=["Model", "Requests"],
+                    )
+                    fig = px.pie(model_df, values="Requests", names="Model", title="Requests by Model")
+                    st.plotly_chart(fig, use_container_width=True)
 
     # ==================================================================
     # TAB 2: Usage Analytics (Trace-based)
@@ -657,7 +736,11 @@ def main():
                 "total_tokens": "Total Tokens",
             }
             for c in type_count_cols:
-                friendly_names[c] = c.replace("_count", "").replace("_", " ").title()
+                label = c.replace("_count", "").replace("_", " ").title()
+                # Avoid collision with existing friendly names (e.g. "Email" from user_email)
+                if label in friendly_names.values():
+                    label = f"{label} Traces"
+                friendly_names[c] = label
             user_display = user_display.rename(columns=friendly_names)
 
             for date_col in ["First Trace", "Last Trace"]:
@@ -2450,11 +2533,13 @@ def main():
                 eff_df = pd.DataFrame(effectiveness)
 
                 import altair as alt
+                # Build tooltip from actual columns in eff_df
+                tooltip_cols = [c for c in eff_df.columns if c in ("category", "conversion_rate", "search_count", "act_count", "search_type", "act_type") or c in eff_df.columns]
                 chart = alt.Chart(eff_df).mark_bar().encode(
                     x=alt.X("conversion_rate:Q", title="Conversion Rate (%)"),
                     y=alt.Y("category:N", sort="-x", title="Category"),
                     color=alt.Color("conversion_rate:Q", scale=alt.Scale(scheme="blues")),
-                    tooltip=["category", "referrals", "action_plans", "conversion_rate"],
+                    tooltip=[alt.Tooltip(c) for c in eff_df.columns],
                 ).properties(height=400)
 
                 st.altair_chart(chart, use_container_width=True)
