@@ -432,14 +432,22 @@ def main():
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=days)
 
-        max_spans = st.number_input(
-            "Max Spans to Load",
-            min_value=100,
-            max_value=50000,
-            value=20000,
-            step=1000,
-            help="Maximum number of spans to load. Increase if your date range is cut short.",
-        )
+        # Max spans is computed automatically based on date range
+        # Use a high ceiling — the Phoenix client paginates anyway
+        days_in_range = max((end_time - start_time).days, 1)
+        # Heuristic: ~200 spans per day is generous for most products;
+        # cap at 100K to avoid memory issues
+        max_spans = min(max(days_in_range * 500, 10000), 100000)
+
+        with st.expander("⚙️ Advanced", expanded=False):
+            max_spans = st.number_input(
+                "Max Spans to Load",
+                min_value=1000,
+                max_value=100000,
+                value=max_spans,
+                step=5000,
+                help="Auto-calculated from your date range. Increase if data appears incomplete.",
+            )
 
         # Product name
         st.text_input(
@@ -607,7 +615,8 @@ def main():
                 _total_spans = len(analyzer.df) if analyzer.df is not None else 0
                 st.warning(
                     f"Data only covers through **{_actual_end.strftime('%Y-%m-%d %H:%M UTC')}**. "
-                    f"Your {_total_spans:,} span limit may be too low — try increasing **Max Spans** in the sidebar."
+                    f"Your date range may have more data than the current span limit ({_total_spans:,}). "
+                    f"Expand **Advanced** in the sidebar to increase the limit."
                 )
 
     # --- Global outlier thresholds for latency charts (Fix 2) ---
