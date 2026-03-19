@@ -1824,23 +1824,61 @@ def main():
         st.subheader("📍 Geographic Coverage")
 
         if geo_data.get("all_zips"):
+            # Summary metrics
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.metric("Total Unique Zip Codes", geo_data.get("total_unique", 0))
+            with col_m2:
+                st.metric("Total Zip References", geo_data.get("total_references", 0))
+
             col1, col2 = st.columns(2)
 
+            # Top zip codes table
             with col1:
-                st.metric("Total Unique Zip Codes", geo_data["total_unique"])
+                st.markdown("**Top Zip Codes (by frequency)**")
+                top_zips = geo_data["all_zips"][:20]
+                top_zips_df = pd.DataFrame(top_zips)
+                if not top_zips_df.empty:
+                    top_zips_df.columns = [c.title() for c in top_zips_df.columns]
+                    st.dataframe(top_zips_df, use_container_width=True, hide_index=True)
 
-                if geo_data.get("texas"):
-                    st.markdown("**Primary Region:**")
-                    for item in geo_data["texas"][:10]:
-                        city = item.get("city", "Unknown")
-                        st.text(f"{item['zip']} - {city} ({item['count']} traces)")
-
+            # Usage by City / Region table
             with col2:
-                if geo_data.get("out_of_state"):
-                    st.markdown("**Out-of-Region:**")
-                    for item in geo_data["out_of_state"]:
-                        city = item.get("city", "Unknown")
-                        st.text(f"{item['zip']} - {city} ({item['count']} traces)")
+                by_city = geo_data.get("by_city", {})
+                by_prefix = geo_data.get("by_prefix", {})
+
+                # Prefer city grouping; fall back to prefix grouping
+                has_real_cities = by_city and any(
+                    k != "Unknown" for k in by_city.keys()
+                )
+                if has_real_cities:
+                    st.markdown("**Usage by City**")
+                    city_rows = []
+                    for city_name, info in sorted(
+                        by_city.items(), key=lambda x: x[1]["count"], reverse=True
+                    ):
+                        city_rows.append({
+                            "City": city_name,
+                            "Unique Zips": len(info["zips"]),
+                            "Trace Count": info["count"],
+                        })
+                    city_df = pd.DataFrame(city_rows)
+                    st.dataframe(city_df, use_container_width=True, hide_index=True)
+                elif by_prefix:
+                    st.markdown("**Usage by Zip Prefix (metro area estimate)**")
+                    prefix_rows = []
+                    for prefix, info in sorted(
+                        by_prefix.items(), key=lambda x: x[1]["count"], reverse=True
+                    ):
+                        prefix_rows.append({
+                            "Zip Prefix": prefix + "xx",
+                            "Unique Zips": len(info["zips"]),
+                            "Trace Count": info["count"],
+                        })
+                    prefix_df = pd.DataFrame(prefix_rows)
+                    st.dataframe(prefix_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No city mapping available. Add zip_to_city in config for city-level grouping.")
         else:
             st.info("No zip codes detected in trace queries")
 
@@ -1886,29 +1924,83 @@ def main():
         latency_dist = analyzer.get_latency_distribution()
 
         if latency_dist:
+            all_values = np.array(latency_dist["histogram"])
+            p95 = np.percentile(all_values, 95)
+            p99 = np.percentile(all_values, 99)
+
+            # Determine outlier threshold using IQR method, capped at p99
+            q1 = np.percentile(all_values, 25)
+            q3 = np.percentile(all_values, 75)
+            iqr = q3 - q1
+            iqr_upper = q3 + 3.0 * iqr  # 3x IQR for "far" outliers
+            clip_threshold = min(iqr_upper, p99) if iqr_upper > 0 else p99
+            # Ensure the threshold is at least p95
+            clip_threshold = max(clip_threshold, p95)
+
+            clipped_values = all_values[all_values <= clip_threshold]
+            n_outliers = int(len(all_values) - len(clipped_values))
+
+            # Compute clean stats (excluding outliers)
+            clean_mean = float(np.mean(clipped_values)) if len(clipped_values) > 0 else 0.0
+
+            # Check if Max is likely anomalous
+            full_max = latency_dist["max"]
+            max_anomalous = full_max > 10 * p95
+
+            use_log = st.checkbox("Log scale (x-axis)", value=False, key="latency_log_scale")
+
             col1, col2 = st.columns([2, 1])
 
             with col1:
-                fig = px.histogram(
-                    x=latency_dist["histogram"],
-                    nbins=50,
-                    title="Latency Distribution",
-                    labels={"x": "Latency (s)", "y": "Count"},
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                if use_log:
+                    # Log scale: show all data, log x-axis naturally spreads the tail
+                    plot_values = all_values[all_values > 0]
+                    fig = px.histogram(
+                        x=plot_values,
+                        nbins=40,
+                        title="Latency Distribution (log scale)",
+                        labels={"x": "Latency (s)", "y": "Count"},
+                        log_x=True,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    fig = px.histogram(
+                        x=clipped_values,
+                        nbins=40,
+                        title="Latency Distribution",
+                        labels={"x": "Latency (s)", "y": "Count"},
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    if n_outliers > 0:
+                        st.caption(
+                            f"Showing distribution up to {clip_threshold:.1f}s. "
+                            f"{n_outliers} outlier(s) above this threshold excluded from chart."
+                        )
 
             with col2:
-                st.markdown("**Latency Statistics**")
+                st.markdown("**Latency Statistics (full data)**")
                 if "population" in latency_dist:
                     st.caption(
                         f"Population: `{latency_dist['population']}` "
                         "(prefers real user questions when available)"
                     )
                 st.metric("Mean", f"{latency_dist['mean']:.2f}s")
+                if n_outliers > 0:
+                    st.metric("Mean (excl. outliers)", f"{clean_mean:.2f}s")
                 st.metric("Median", f"{latency_dist['median']:.2f}s")
                 st.metric("Std Dev", f"{latency_dist['std']:.2f}s")
                 st.metric("Min", f"{latency_dist['min']:.2f}s")
-                st.metric("Max", f"{latency_dist['max']:.2f}s")
+                if max_anomalous:
+                    st.metric("Max", f"{full_max:.2f}s")
+                    st.warning(
+                        f"Max ({full_max:.0f}s) is >{10}x the p95 ({p95:.1f}s) — likely an anomalous/broken trace."
+                    )
+                else:
+                    st.metric("Max", f"{full_max:.2f}s")
+
+                if n_outliers > 0:
+                    st.markdown("---")
+                    st.markdown(f"**Outliers:** {n_outliers} traces above {clip_threshold:.1f}s")
 
         # Percentiles
         if latency_dist and "percentiles" in latency_dist:

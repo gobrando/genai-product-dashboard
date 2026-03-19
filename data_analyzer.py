@@ -924,12 +924,10 @@ class TraceAnalyzer:
     def _infer_category_from_resources_via_config(self, trace_spans: List[Dict]) -> str:
         """
         Infer category from resource text in spans using config-based
-        keyword matching.  Falls back to empty string if nothing matches.
+        keyword matching (with builtin fallback).
+        Falls back to empty string if nothing matches.
         """
         from config import classify_query_category
-
-        if not self.config.categories:
-            return ''
 
         for span in trace_spans:
             attrs = span.get('attributes', {})
@@ -1298,9 +1296,11 @@ class TraceAnalyzer:
         if not zip_codes:
             return {
                 'all_zips': [],
+                'by_city': {},
                 'in_region': [],
                 'out_of_region': [],
-                'total_unique': 0
+                'total_unique': 0,
+                'total_references': 0
             }
 
         # Use config-based zip-to-city mapping
@@ -1308,6 +1308,13 @@ class TraceAnalyzer:
 
         # Count occurrences
         zip_counts = Counter(zip_codes)
+        total_references = sum(zip_counts.values())
+
+        # Resolve city names: config mapping first, then zip-prefix heuristic
+        def _resolve_city(zc: str) -> str:
+            if zc in zip_to_city:
+                return zip_to_city[zc]
+            return 'Unknown'
 
         # Build the set of all configured region zip codes
         from config import get_region_zip_set
@@ -1316,24 +1323,46 @@ class TraceAnalyzer:
         in_region_list = []
         out_of_region_list = []
 
-        for zip_code, count in zip_counts.items():
-            city = zip_to_city.get(zip_code, 'Unknown')
+        # Build all_zips list and by_city grouping
+        all_zips_list = []
+        by_city: Dict[str, Dict] = {}
+
+        for zip_code, count in zip_counts.most_common():
+            city = _resolve_city(zip_code)
             zip_entry = {'zip': zip_code, 'city': city, 'count': count}
+            all_zips_list.append(zip_entry)
+
+            # Group by city
+            if city not in by_city:
+                by_city[city] = {'count': 0, 'zips': []}
+            by_city[city]['count'] += count
+            by_city[city]['zips'].append(zip_code)
 
             if region_zips and zip_code in region_zips:
                 in_region_list.append(zip_entry)
             elif region_zips:
                 out_of_region_list.append(zip_entry)
             else:
-                # No regions configured: put everything in a single bucket
                 in_region_list.append(zip_entry)
 
+        # If zip_to_city mapping is empty, also group by 3-digit prefix
+        by_prefix: Dict[str, Dict] = {}
+        if not zip_to_city:
+            for zip_code, count in zip_counts.items():
+                prefix = zip_code[:3]
+                if prefix not in by_prefix:
+                    by_prefix[prefix] = {'count': 0, 'zips': []}
+                by_prefix[prefix]['count'] += count
+                by_prefix[prefix]['zips'].append(zip_code)
+
         return {
-            'all_zips': [{'zip': z, 'city': zip_to_city.get(z, 'Unknown'), 'count': c}
-                         for z, c in zip_counts.most_common()],
+            'all_zips': all_zips_list,
+            'by_city': by_city,
+            'by_prefix': by_prefix,
             'in_region': sorted(in_region_list, key=lambda x: x['count'], reverse=True),
             'out_of_region': sorted(out_of_region_list, key=lambda x: x['count'], reverse=True),
-            'total_unique': len(zip_counts)
+            'total_unique': len(zip_counts),
+            'total_references': total_references
         }
 
     # ------------------------------------------------------------------

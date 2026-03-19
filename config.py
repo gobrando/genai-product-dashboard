@@ -258,25 +258,62 @@ def classify_trace_type(
     return "other"
 
 
+BUILTIN_CATEGORIES = {
+    'Employment & Job Training': ['job', 'employment', 'career', 'work', 'hiring', 'resume', 'training program', 'workforce', 'vocational', 'apprentice', 'certification', 'cdl', 'cna'],
+    'Housing & Shelter': ['housing', 'apartment', 'rent', 'shelter', 'homeless', 'eviction', 'mortgage', 'section 8', 'affordable housing', 'transitional housing'],
+    'Food Assistance': ['food', 'meal', 'groceries', 'hunger', 'food bank', 'food pantry', 'snap', 'wic', 'nutrition'],
+    'Financial Assistance': ['financial', 'money', 'debt', 'loan', 'credit', 'bankruptcy', 'bill', 'utility assistance', 'emergency funds', 'grants'],
+    'Healthcare & Mental Health': ['health', 'medical', 'doctor', 'clinic', 'mental health', 'therapy', 'counseling', 'dental', 'vision', 'medication', 'insurance'],
+    'Education & GED': ['education', 'school', 'ged', 'diploma', 'esl', 'english class', 'tutoring', 'college', 'scholarship', 'adult education'],
+    'Transportation': ['transportation', 'bus', 'ride', 'transit', 'vehicle', 'gas', 'uber', 'lyft'],
+    'Childcare & Family': ['childcare', 'child care', 'daycare', 'baby', 'parenting', 'family', 'preschool', 'after school'],
+    'Legal Services': ['legal', 'lawyer', 'attorney', 'court', 'immigration', 'eviction defense', 'expungement'],
+    'Substance Abuse': ['substance', 'addiction', 'drug', 'alcohol', 'rehab', 'recovery', 'sobriety', 'detox'],
+    'Disability Services': ['disability', 'disabled', 'wheelchair', 'accessibility', 'special needs', 'ssdi', 'ssi'],
+    'Veterans Services': ['veteran', 'military', 'va benefits', 'gi bill'],
+}
+
+
+def _match_keywords(query_lower: str, keywords: List[str]) -> int:
+    """Score a query against a list of keywords. Multi-word keywords score higher."""
+    score = 0
+    for keyword in keywords:
+        if keyword.lower() in query_lower:
+            score += len(keyword.split())
+    return score
+
+
 def classify_query_category(
     query: str,
     config: DashboardConfig
 ) -> str:
-    """Classify a query into a category based on configured keywords."""
-    if not query or not config.categories:
+    """Classify a query into a category based on configured keywords,
+    falling back to builtin broad categories when config categories
+    don't match."""
+    if not query:
         return ""
 
     query_lower = query.lower()
+
+    # Step 1: Try config-defined categories first
     best_category = ""
     best_score = 0
 
-    for cat in config.categories:
-        score = 0
-        for keyword in cat.keywords:
-            if keyword.lower() in query_lower:
-                score += len(keyword.split())
+    if config.categories:
+        for cat in config.categories:
+            score = _match_keywords(query_lower, cat.keywords)
+            if score > best_score:
+                best_score = score
+                best_category = cat.name
+
+    if best_category:
+        return best_category
+
+    # Step 2: Fall back to builtin categories
+    for cat_name, keywords in BUILTIN_CATEGORIES.items():
+        score = _match_keywords(query_lower, keywords)
         if score > best_score:
             best_score = score
-            best_category = cat.name
+            best_category = cat_name
 
     return best_category
