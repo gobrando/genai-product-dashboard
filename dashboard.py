@@ -244,7 +244,7 @@ def _get_location_for_email_dynamic(
 # Data loading
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=43200)  # Cache for 12 hours
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def load_data(
     _client,
     project_id,
@@ -433,21 +433,22 @@ def main():
             start_time = end_time - timedelta(days=days)
 
         # Max spans is computed automatically based on date range
-        # Use a high ceiling — the Phoenix client paginates anyway
         days_in_range = max((end_time - start_time).days, 1)
-        # Heuristic: ~200 spans per day is generous for most products;
-        # cap at 100K to avoid memory issues
         max_spans = min(max(days_in_range * 500, 10000), 100000)
 
         with st.expander("⚙️ Advanced", expanded=False):
-            max_spans = st.number_input(
+            st.caption(f"Auto-calculated: {max_spans:,} spans for {days_in_range} days")
+            user_override = st.number_input(
                 "Max Spans to Load",
                 min_value=1000,
                 max_value=100000,
                 value=max_spans,
                 step=5000,
+                key="_max_spans_override",
                 help="Auto-calculated from your date range. Increase if data appears incomplete.",
             )
+            # Use the larger of auto-calculated and user override
+            max_spans = max(max_spans, user_override)
 
         # Product name
         st.text_input(
